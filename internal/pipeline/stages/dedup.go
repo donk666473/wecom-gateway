@@ -28,7 +28,7 @@ func NewDedupStage() *DedupStage {
 
 func (s *DedupStage) Name() string { return "dedup" }
 
-func (s *DedupStage) Process(ctx *pipeline.Context) *pipeline.Result {
+func (s *DedupStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	if ctx.Event.MessageID == "" {
 		return pipeline.Continue() // 无 MessageID 则跳过去重
 	}

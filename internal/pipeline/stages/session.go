@@ -37,7 +37,7 @@ func NewSessionStage(bridge BridgeSessionManager) *SessionStage {
 
 func (s *SessionStage) Name() string { return "session" }
 
-func (s *SessionStage) Process(ctx *pipeline.Context) *pipeline.Result {
+func (s *SessionStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	event := ctx.Event
 	isGroup := event.ConversationType == common.ConversationTypeGroup
 	assistantID := ctx.AssistantID

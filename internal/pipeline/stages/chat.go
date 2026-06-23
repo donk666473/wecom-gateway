@@ -39,7 +39,7 @@ func NewChatStage(bridge BridgeChatManager) *ChatStage {
 
 func (s *ChatStage) Name() string { return "chat" }
 
-func (s *ChatStage) Process(ctx *pipeline.Context) *pipeline.Result {
+func (s *ChatStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	event := ctx.Event
 
 	// 1. 获取智能体信息
