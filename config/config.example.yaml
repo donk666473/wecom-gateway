@@ -1,0 +1,55 @@
+# 企微网关配置文件示例
+# 使用时复制为 config.yaml 并修改实际配置
+
+server:
+  port: 8080
+  mode: release  # debug / release / test
+
+log:
+  file: /var/log/wecom-gateway.log
+  level: info
+  max_size: 100
+  backups: 3
+  max_age: 30
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  driver_name: postgres
+  database: asset
+  username: root
+  password: ""
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 3600
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: ""
+  db: 0
+  prefix: "wecom"
+
+datrix:
+  asset_url: "http://127.0.0.1:30805"
+  assistant_url: "http://127.0.0.1:30806"
+  free_login:
+    aes_key: "DATATOM4UAcOR3uLx3bx49kIDdAhaRCAr"
+    signing_key: "skGqMOrcnOcu35Z9APzjfCZuauWQ7BWfIsoEJ1FI"
+  session:
+    timeout: 2h
+    token_ttl: 24h
+    dedup_ttl: 5m
+
+wecom:
+  api_base_url: "https://qyapi.weixin.qq.com/cgi-bin"
+
+message:
+  batch_size: 50
+  chunk_size: 2048
+  poll_interval: 1500
+
+auth:
+  callback_url: "https://your-domain.com/im/auth/callback"
+  state_ttl: 300
+  token_ttl: 30
