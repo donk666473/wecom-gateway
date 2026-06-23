@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -36,6 +37,64 @@ import (
 	"github.com/wecom-gateway/internal/processor"
 	"github.com/wecom-gateway/internal/utils"
 )
+
+type bridgeAuthAdapter struct {
+	impl *bridge.DatrixBridgeImpl
+}
+
+func (a *bridgeAuthAdapter) Login(param *auth.LoginParam) (string, string, error) {
+	if param == nil {
+		return a.impl.Login(nil)
+	}
+
+	bridgeParam := &bridge.LoginParam{}
+	if err := copyStructFields(bridgeParam, param); err != nil {
+		return "", "", err
+	}
+
+	return a.impl.Login(bridgeParam)
+}
+
+func (a *bridgeAuthAdapter) GenerateFreePassword(userName string) string {
+	return a.impl.GenerateFreePassword(userName)
+}
+
+func (a *bridgeAuthAdapter) SearchUser(platform, unionID string) (bool, string, error) {
+	return a.impl.SearchUser(platform, unionID)
+}
+
+func copyStructFields(dst, src interface{}) error {
+	dv := reflect.ValueOf(dst)
+	sv := reflect.ValueOf(src)
+	if dv.Kind() != reflect.Ptr || sv.Kind() != reflect.Ptr {
+		return fmt.Errorf("copyStructFields requires pointer values")
+	}
+
+	dv = dv.Elem()
+	sv = sv.Elem()
+	if dv.Kind() != reflect.Struct || sv.Kind() != reflect.Struct {
+		return fmt.Errorf("copyStructFields requires struct pointers")
+	}
+
+	for i := 0; i < dv.NumField(); i++ {
+		dField := dv.Type().Field(i)
+		if !dField.IsExported() {
+			continue
+		}
+
+		sField := sv.FieldByName(dField.Name)
+		if !sField.IsValid() || !sField.CanInterface() {
+			continue
+		}
+		if !sField.Type().AssignableTo(dField.Type) {
+			continue
+		}
+
+		dv.Field(i).Set(sField)
+	}
+
+	return nil
+}
 
 func main() {
 	log.Println("[WECOM-GATEWAY] 正在启动企微对接网关...")
@@ -102,9 +161,10 @@ func main() {
 		DB:       cfg.Redis.DB,
 		Prefix:   cfg.Redis.Prefix,
 	}); err != nil {
-		utils.Sugar.Fatalf("初始化 Redis 失败: %v", err)
+		utils.Sugar.Warnf("初始化 Redis 失败，继续启动（降级模式）: %v", err)
+	} else {
+		utils.Sugar.Info("Redis 连接成功")
 	}
-	utils.Sugar.Info("Redis 连接成功")
 
 	// ========================================================================
 	// Stage 5: 创建 DATRIX Bridge
@@ -135,7 +195,7 @@ func main() {
 	// ========================================================================
 	// Stage 8: 创建 AuthService（扫码登录）
 	// ========================================================================
-	authService := auth.NewAuthService(botMgr, datrixBridge)
+	authService := auth.NewAuthService(botMgr, &bridgeAuthAdapter{impl: datrixBridge})
 
 	// ========================================================================
 	// Stage 9: 启动 HTTP 服务

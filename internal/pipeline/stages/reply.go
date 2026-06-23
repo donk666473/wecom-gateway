@@ -3,7 +3,6 @@ package stages
 import (
 	"fmt"
 
-	"github.com/wecom-gateway/internal/adapter"
 	"github.com/wecom-gateway/internal/pipeline"
 	"github.com/wecom-gateway/internal/utils"
 )
@@ -27,7 +26,7 @@ func NewReplyStage(am AdapterManager) *ReplyStage {
 
 func (s *ReplyStage) Name() string { return "reply" }
 
-func (s *ReplyStage) Process(ctx *pipeline.Context) *pipeline.Result {
+func (s *ReplyStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	event := ctx.Event
 
 	// 获取适配器

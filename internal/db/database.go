@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	sqlite "github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -27,24 +28,33 @@ type DatabaseConfig struct {
 // InitDatabase 初始化数据库连接并返回 GORM 实例。
 // 支持自动创建数据库和连接池配置。
 func InitDatabase(cfg *DatabaseConfig, logLevel logger.LogLevel) (*gorm.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable TimeZone=Asia/Shanghai",
-		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database,
-	)
+	// 支持不同数据库驱动（postgres / sqlite）以便在本地快速运行测试
+	var db *gorm.DB
+	var err error
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logLevel),
-	})
-	if err != nil {
-		// 尝试创建数据库后重连
-		if err := createDatabaseIfNotExist(cfg); err != nil {
-			return nil, fmt.Errorf("创建数据库失败: %w", err)
-		}
-		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-			Logger: logger.Default.LogMode(logLevel),
-		})
+	switch cfg.DriverName {
+	case "sqlite", "sqlite3":
+		// 对于 sqlite，cfg.Database 应为 DSN（例如 file::memory:?cache=shared 或 ./wecom.db）
+		db, err = gorm.Open(sqlite.Open(cfg.Database), &gorm.Config{Logger: logger.Default.LogMode(logLevel)})
 		if err != nil {
-			return nil, fmt.Errorf("连接数据库失败: %w", err)
+			return nil, fmt.Errorf("打开 sqlite 数据库失败: %w", err)
+		}
+	default:
+		dsn := fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable TimeZone=Asia/Shanghai",
+			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database,
+		)
+
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logLevel)})
+		if err != nil {
+			// 尝试创建数据库后重连
+			if err := createDatabaseIfNotExist(cfg); err != nil {
+				return nil, fmt.Errorf("创建数据库失败: %w", err)
+			}
+			db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logLevel)})
+			if err != nil {
+				return nil, fmt.Errorf("连接数据库失败: %w", err)
+			}
 		}
 	}
 

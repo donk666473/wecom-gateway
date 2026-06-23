@@ -3,6 +3,7 @@ package stages
 import (
 	"fmt"
 
+	"github.com/wecom-gateway/internal/bridge"
 	"github.com/wecom-gateway/internal/common"
 	"github.com/wecom-gateway/internal/db"
 	"github.com/wecom-gateway/internal/model"
@@ -27,16 +28,9 @@ type TokenStage struct {
 
 // BridgeTokenManager Token 管理接口（依赖反转）
 type BridgeTokenManager interface {
-	Login(param *LoginParam) (token string, userID string, err error)
+	Login(param *bridge.LoginParam) (token string, userID string, err error)
 	CheckTokenValid(token string) bool
 	GenerateFreePassword(userName string) string
-}
-
-// LoginParam 简化的登录参数（避免导入 bridge 包）
-type LoginParam struct {
-	Password string
-	From     int
-	Type     int
 }
 
 // NewTokenStage 创建 Token 管理阶段
@@ -46,7 +40,7 @@ func NewTokenStage(bridge BridgeTokenManager) *TokenStage {
 
 func (s *TokenStage) Name() string { return "token" }
 
-func (s *TokenStage) Process(ctx *pipeline.Context) *pipeline.Result {
+func (s *TokenStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	event := ctx.Event
 	userName := ctx.DatrixUserName
 
@@ -73,8 +67,9 @@ func (s *TokenStage) Process(ctx *pipeline.Context) *pipeline.Result {
 
 	// 2. 免密登录获取新 Token
 	pwd := s.bridgeTokenManager.GenerateFreePassword(userName)
-	token, userID, err := s.bridgeTokenManager.Login(&LoginParam{
+	token, userID, err := s.bridgeTokenManager.Login(&bridge.LoginParam{
 		Password: pwd,
+		LoginID:  userName,
 		From:     0,
 		Type:     1,
 	})

@@ -23,7 +23,7 @@ import (
 // IdentityStage 用户身份映射阶段。
 // 需要注入 AdapterManager 和 DatrixBridge 依赖。
 type IdentityStage struct {
-	adapterManager AdapterManager
+	adapterManager    AdapterManager
 	bridgeUserChecker BridgeUserChecker
 }
 
@@ -40,14 +40,14 @@ type BridgeUserChecker interface {
 // NewIdentityStage 创建身份映射阶段
 func NewIdentityStage(am AdapterManager, checker BridgeUserChecker) *IdentityStage {
 	return &IdentityStage{
-		adapterManager:   am,
+		adapterManager:    am,
 		bridgeUserChecker: checker,
 	}
 }
 
 func (s *IdentityStage) Name() string { return "identity" }
 
-func (s *IdentityStage) Process(ctx *pipeline.Context) *pipeline.Result {
+func (s *IdentityStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	event := ctx.Event
 
 	// 1. 先从本地数据库查询已绑定的用户

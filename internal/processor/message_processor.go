@@ -99,7 +99,7 @@ func (p *MessageProcessor) handlePipelineError(ctx *pipeline.Context, err error)
 
 // resolveAssistant 解析当前绑定智能体ID的 Pipeline 阶段。
 // 从数据库查询应用的默认智能体。
-func (p *MessageProcessor) resolveAssistant(ctx *pipeline.Context) *pipeline.Result {
+func (p *MessageProcessor) resolveAssistant(ctx *pipeline.Context) *pipeline.StageResult {
 	binding, err := model.GetDefaultAssistant(ctx.Event.AppID)
 	if err != nil {
 		utils.Sugar.Warnf("[MessageProcessor] 未找到默认智能体 [app_id=%s]", ctx.Event.AppID)
