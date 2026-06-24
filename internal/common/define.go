@@ -96,14 +96,16 @@ const (
 
 // ============================================================================
 // Redis Key 前缀定义
+// 注意：实际 Redis Key 会由 db/redis.go 的 redisPrefixHook 自动添加全局前缀。
+// 以下常量仅定义业务 Key 后缀，最终 Key 格式为：{prefix}:{常量值}
 // ============================================================================
 const (
-	RedisPrefixToken     = "wecom:access_token"   // 企微 access_token 缓存
-	RedisPrefixDedup     = "im:dedup"             // 消息去重
-	RedisPrefixTokenUser = "im:token"             // 用户 Token 缓存
-	RedisPrefixAuthState = "im:auth:state"        // 扫码登录 state
-	RedisPrefixAuthToken = "im:auth:token"        // 扫码登录临时 Token
-	RedisPrefixAuthResult = "im:auth:result"       // 扫码登录结果
+	RedisPrefixToken      = "access_token"   // 企微 access_token 缓存
+	RedisPrefixDedup      = "dedup"          // 消息去重
+	RedisPrefixTokenUser  = "token"          // 用户 Token 缓存
+	RedisPrefixAuthState  = "auth:state"     // 扫码登录 state
+	RedisPrefixAuthToken  = "auth:token"     // 扫码登录临时 Token
+	RedisPrefixAuthResult = "auth:result"    // 扫码登录结果
 )
 
 // ============================================================================

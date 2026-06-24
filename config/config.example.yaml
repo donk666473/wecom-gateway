@@ -14,7 +14,7 @@ log:
 
 database:
   host: 127.0.0.1
-  port: 3306
+  port: 5432
   driver_name: postgres
   database: asset
   username: root
@@ -34,8 +34,8 @@ datrix:
   asset_url: "http://127.0.0.1:30805"
   assistant_url: "http://127.0.0.1:30806"
   free_login:
-    aes_key: "DATATOM4UAcOR3uLx3bx49kIDdAhaRCAr"
-    signing_key: "skGqMOrcnOcu35Z9APzjfCZuauWQ7BWfIsoEJ1FI"
+    aes_key: "YOUR_AES_KEY_HERE"
+    signing_key: "YOUR_SIGNING_KEY_HERE"
   session:
     timeout: 2h
     token_ttl: 24h

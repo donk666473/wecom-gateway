@@ -273,9 +273,21 @@ func populateCommonConfig(cfg *config.Config) {
 	common.FreeLoginSigningKey = cfg.Datrix.FreeLogin.SigningKey
 
 	// 会话配置
-	common.SessionTimeout, _ = time.ParseDuration(cfg.Datrix.Session.Timeout)
-	common.TokenTTL, _ = time.ParseDuration(cfg.Datrix.Session.TokenTTL)
-	common.DedupTTL, _ = time.ParseDuration(cfg.Datrix.Session.DedupTTL)
+	if d, err := time.ParseDuration(cfg.Datrix.Session.Timeout); err == nil {
+		common.SessionTimeout = d
+	} else {
+		common.SessionTimeout = 2 * time.Hour
+	}
+	if d, err := time.ParseDuration(cfg.Datrix.Session.TokenTTL); err == nil {
+		common.TokenTTL = d
+	} else {
+		common.TokenTTL = 24 * time.Hour
+	}
+	if d, err := time.ParseDuration(cfg.Datrix.Session.DedupTTL); err == nil {
+		common.DedupTTL = d
+	} else {
+		common.DedupTTL = 5 * time.Minute
+	}
 
 	// 消息配置
 	common.MessageBatchSize = cfg.Message.BatchSize

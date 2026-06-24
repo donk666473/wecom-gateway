@@ -7,7 +7,8 @@
 package bridge
 
 import (
-	"crypto/tls"
+	"crypto/aes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ type DatrixBridgeImpl struct {
 func NewDatrixBridge() *DatrixBridgeImpl {
 	return &DatrixBridgeImpl{
 		httpClient: &http.Client{
-			Timeout: time.Duration(common.HTTPRequestTimeoutMin) * time.Minute,
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -62,13 +63,19 @@ func (b *DatrixBridgeImpl) SearchUser(platform, unionID string) (bool, string, e
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return false, "", fmt.Errorf("查询DATRIX用户失败: status=%d", resp.StatusCode)
+	}
+
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
 			UserName string `json:"userName"`
 		} `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, "", fmt.Errorf("解析DATRIX用户响应失败: %w", err)
+	}
 
 	if result.Code != 200 || result.Data.UserName == "" {
 		return false, "", nil
@@ -83,7 +90,10 @@ func (b *DatrixBridgeImpl) SearchUser(platform, unionID string) (bool, string, e
 // Login 免密登录获取 DATRIX Token。
 func (b *DatrixBridgeImpl) Login(param *LoginParam) (string, string, error) {
 	apiPath := "/api/mx/api/v1/user/freeLogin"
-	body, _ := json.Marshal(param)
+	body, err := json.Marshal(param)
+	if err != nil {
+		return "", "", fmt.Errorf("序列化免密登录参数失败: %w", err)
+	}
 
 	resp, err := b.httpClient.Post(
 		common.DatrixAssetURL+apiPath,
@@ -94,6 +104,10 @@ func (b *DatrixBridgeImpl) Login(param *LoginParam) (string, string, error) {
 		return "", "", fmt.Errorf("免密登录请求失败: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("免密登录请求失败: status=%d", resp.StatusCode)
+	}
 
 	var tokenInfo common.TokenInfo
 	if err := json.NewDecoder(resp.Body).Decode(&tokenInfo); err != nil {
@@ -116,22 +130,48 @@ func (b *DatrixBridgeImpl) CheckTokenValid(token string) bool {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		utils.Sugar.Warnf("[DatrixBridge] 检查Token失败: status=%d", resp.StatusCode)
+		return false
+	}
+
 	var result struct {
 		Code int `json:"code"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		utils.Sugar.Warnf("[DatrixBridge] 检查Token响应解析失败: %v", err)
+		return false
+	}
 	return result.Code == 200
 }
 
 // GenerateFreePassword 生成免密登录密码。
-// 使用 AES-128-ECB 加密用户名信息。
+// 使用配置的 AES Key 和 Signing Key 加密用户信息。
+// 注意：此方法需要根据 DATRIX 平台的免密登录算法实际实现。
+// 当前使用 AES-CBC 加密，实际算法以 DATRIX 平台规范为准。
 func (b *DatrixBridgeImpl) GenerateFreePassword(userName string) string {
-	// 构建待加密内容：{"userName":"xxx"}
 	data := fmt.Sprintf(`{"userName":"%s"}`, userName)
 
-	// 使用 AES Key 生成密码（具体算法由 DATRIX 平台定义）
-	// 此处预留接口，实际实现需对接 DATRIX 的免密登录算法
-	utils.Sugar.Debugf("[DatrixBridge] 生成免密密码: user=%s", userName)
+	if common.FreeLoginAESKey != "" {
+		// 解码 AES Key
+		key, err := base64.StdEncoding.DecodeString(common.FreeLoginAESKey)
+		if err != nil {
+			utils.Sugar.Warnf("[DatrixBridge] 解码 AES Key 失败: %v", err)
+			return data
+		}
+		if len(key) < aes.BlockSize {
+			utils.Sugar.Warnf("[DatrixBridge] AES Key 长度不足: %d", len(key))
+			return data
+		}
+		// 使用 AES Key 前 16 字节作为 IV
+		iv := key[:aes.BlockSize]
+		encrypted, err := utils.AESEncrypt(key, iv, []byte(data))
+		if err != nil {
+			utils.Sugar.Warnf("[DatrixBridge] 免密密码加密失败: %v", err)
+			return data
+		}
+		return encrypted
+	}
 	return data
 }
 
@@ -153,12 +193,12 @@ func (b *DatrixBridgeImpl) GetAssistantInfo(token, assistantID string) (*Assista
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
-			ID          string   `json:"id"`
-			Name        string   `json:"name"`
-			Logo        string   `json:"logo"`
-			KbOnly      bool     `json:"knowledge_base_only"`
-			NeedUserKb  bool     `json:"need_user_knowledge"`
-			KbIDs       []string `json:"knowledge_base_ids"`
+			ID         string   `json:"id"`
+			Name       string   `json:"name"`
+			Logo       string   `json:"logo"`
+			KbOnly     bool     `json:"knowledge_base_only"`
+			NeedUserKb bool     `json:"need_user_knowledge"`
+			KbIDs      []string `json:"knowledge_base_ids"`
 		} `json:"data"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
@@ -236,11 +276,21 @@ func (b *DatrixBridgeImpl) GetHistory(token, sessionID string) ([][]string, erro
 // ChatWithAssistant 与 DATRIX 智能体进行 WebSocket 流式对话。
 // 建立 WebSocket 连接，发送消息，异步读取流式响应。
 func (b *DatrixBridgeImpl) ChatWithAssistant(token, sessionID, userID string, msg *ChatMessage) (<-chan ChatResponse, error) {
-	// 构建 WebSocket URL
-	assistantHost := strings.TrimPrefix(common.DatrixAssistantURL, "http://")
+	baseURL, err := url.Parse(common.DatrixAssistantURL)
+	if err != nil {
+		return nil, fmt.Errorf("无效的 DATRIX Assistant URL: %w", err)
+	}
+	if baseURL.Scheme != "http" && baseURL.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported scheme: %s", baseURL.Scheme)
+	}
+	wsScheme := "ws"
+	if baseURL.Scheme == "https" {
+		wsScheme = "wss"
+	}
+
 	wsURL := url.URL{
-		Scheme: "ws",
-		Host:   assistantHost,
+		Scheme: wsScheme,
+		Host:   baseURL.Host,
 		Path:   fmt.Sprintf("/api/app/at/api/v1/assistant/%s/chat", sessionID),
 	}
 	query := wsURL.Query()
@@ -250,7 +300,6 @@ func (b *DatrixBridgeImpl) ChatWithAssistant(token, sessionID, userID string, ms
 
 	// 建立 WebSocket 连接
 	dialer := websocket.DefaultDialer
-	dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	dialer.HandshakeTimeout = 10 * time.Second
 
 	conn, _, err := dialer.Dial(wsURL.String(), nil)

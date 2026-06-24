@@ -38,12 +38,8 @@ func GetSessionInfo(appID, staffID, conversationID string, isGroup bool) (*WeCom
 // SaveOrUpdateSession 保存或更新会话
 func SaveOrUpdateSession(session *WeComSession) error {
 	var existing WeComSession
-	query := DB.Where("app_id = ? AND staff_id = ?", session.AppID, session.StaffID)
-	if session.IsGroup {
-		query = query.Where("conversation_id = ? AND is_group = true", session.ConversationID)
-	} else {
-		query = query.Where("is_group = false")
-	}
+	query := DB.Where("app_id = ? AND staff_id = ? AND conversation_id = ? AND is_group = ?",
+		session.AppID, session.StaffID, session.ConversationID, session.IsGroup)
 	err := query.First(&existing).Error
 	if err != nil {
 		// 不存在则创建

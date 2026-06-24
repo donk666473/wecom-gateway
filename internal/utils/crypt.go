@@ -19,6 +19,12 @@ import (
 // AESEncrypt AES-CBC 加密（PKCS7 填充）
 // key 和 iv 为原始字节，plain 为明文。
 func AESEncrypt(key, iv, plain []byte) (string, error) {
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return "", fmt.Errorf("invalid AES key length: %d", len(key))
+	}
+	if len(iv) != aes.BlockSize {
+		return "", fmt.Errorf("invalid AES IV length: %d", len(iv))
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
@@ -35,6 +41,12 @@ func AESEncrypt(key, iv, plain []byte) (string, error) {
 
 // AESDecrypt AES-CBC 解密（PKCS7 填充）
 func AESDecrypt(key, iv []byte, ciphertext string) ([]byte, error) {
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return nil, fmt.Errorf("invalid AES key length: %d", len(key))
+	}
+	if len(iv) != aes.BlockSize {
+		return nil, fmt.Errorf("invalid AES IV length: %d", len(iv))
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -53,7 +65,7 @@ func AESDecrypt(key, iv []byte, ciphertext string) ([]byte, error) {
 	plain := make([]byte, len(data))
 	mode.CryptBlocks(plain, data)
 
-	return pkcs7UnPadding(plain), nil
+	return pkcs7UnPadding(plain)
 }
 
 // pkcs7Padding PKCS7 填充
@@ -67,16 +79,21 @@ func pkcs7Padding(data []byte, blockSize int) []byte {
 }
 
 // pkcs7UnPadding PKCS7 去填充
-func pkcs7UnPadding(data []byte) []byte {
+func pkcs7UnPadding(data []byte) ([]byte, error) {
 	length := len(data)
 	if length == 0 {
-		return data
+		return nil, fmt.Errorf("empty data")
 	}
-	unPadding := int(data[length-1])
-	if unPadding > length {
-		return data
+	padLen := int(data[length-1])
+	if padLen == 0 || padLen > aes.BlockSize || padLen > length {
+		return nil, fmt.Errorf("invalid padding length: %d", padLen)
 	}
-	return data[:length-unPadding]
+	for i := length - padLen; i < length; i++ {
+		if data[i] != byte(padLen) {
+			return nil, fmt.Errorf("invalid padding bytes")
+		}
+	}
+	return data[:length-padLen], nil
 }
 
 // Md5Sum 计算 MD5 哈希
@@ -103,16 +120,24 @@ func HmacSHA256(data, key []byte) []byte {
 // GenerateNonce 生成随机 Nonce（16 字节 hex 编码）
 func GenerateNonce() string {
 	b := make([]byte, 16)
-	_, _ = io.ReadFull(rand.Reader, b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return ""
+	}
 	return hex.EncodeToString(b)
 }
 
 // DecryptPassword 使用 AES-CBC 解密加密的密码。
 // 用于解密配置文件中加密存储的数据库/Redis 密码。
-// key 默认: "b558a55ed617dab7", iv 默认: "cdccB3uiWDu7mcxw"
-func DecryptPassword(encrypted string) (string, error) {
-	key := []byte("b558a55ed617dab7")
-	iv := []byte("cdccB3uiWDu7mcxw")
+// key 和 iv 需根据实际环境配置。
+func DecryptPassword(encrypted, keyHex, ivHex string) (string, error) {
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return "", fmt.Errorf("invalid key hex: %w", err)
+	}
+	iv, err := hex.DecodeString(ivHex)
+	if err != nil {
+		return "", fmt.Errorf("invalid iv hex: %w", err)
+	}
 	decrypted, err := AESDecrypt(key, iv, encrypted)
 	if err != nil {
 		return "", err

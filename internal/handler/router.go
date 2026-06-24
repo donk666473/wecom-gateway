@@ -112,9 +112,15 @@ func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine
 // corsMiddleware CORS 跨域中间件
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		} else {
+			c.Header("Access-Control-Allow-Origin", "*")
+		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Access-Token")
+		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {
@@ -195,6 +201,10 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 	if err := c.ShouldBindJSON(&app); err != nil {
 		c.JSON(http.StatusBadRequest, Error("参数错误"))
 		return
+	}
+	// 自动生成 AppID（如果未提供）
+	if app.AppID == "" {
+		app.AppID = utils.GenerateUUID()
 	}
 	if err := app.Create(); err != nil {
 		c.JSON(http.StatusInternalServerError, Error("创建应用失败"))

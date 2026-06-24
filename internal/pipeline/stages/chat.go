@@ -81,10 +81,12 @@ func (s *ChatStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 			utils.Sugar.Errorf("[%s] 对话出错: %s", s.Name(), resp.Error)
 			return pipeline.Interrupt(fmt.Errorf("对话出错: %s", resp.Error))
 		}
+		if resp.Content != "" {
+			fullResponse = resp.Content
+		}
 		if resp.IsFinal {
 			break
 		}
-		fullResponse = resp.Content
 	}
 
 	ctx.FullResponse = fullResponse

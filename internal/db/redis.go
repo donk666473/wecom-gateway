@@ -28,6 +28,13 @@ var (
 	redisPrefix string
 )
 
+func ensureRedis() error {
+	if RDB == nil {
+		return fmt.Errorf("redis client is not initialized")
+	}
+	return nil
+}
+
 // InitRedis 初始化 Redis 连接并注入前缀 Hook。
 func InitRedis(cfg *RedisConfig) error {
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
@@ -61,6 +68,9 @@ func InitRedis(cfg *RedisConfig) error {
 
 // RedisGet 从 Redis 获取字符串值
 func RedisGet(key string) (string, error) {
+	if err := ensureRedis(); err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return RDB.Get(ctx, key).Result()
@@ -68,6 +78,9 @@ func RedisGet(key string) (string, error) {
 
 // RedisSet 设置 Redis 字符串值（带过期时间）
 func RedisSet(key, value string, expiration time.Duration) error {
+	if err := ensureRedis(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return RDB.Set(ctx, key, value, expiration).Err()
@@ -76,6 +89,9 @@ func RedisSet(key, value string, expiration time.Duration) error {
 // RedisSetNX 设置 Redis 值（仅当 key 不存在时），返回 true 表示设置成功。
 // 用于消息去重等场景。
 func RedisSetNX(key, value string, expiration time.Duration) bool {
+	if err := ensureRedis(); err != nil {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return RDB.SetNX(ctx, key, value, expiration).Val()
@@ -83,6 +99,9 @@ func RedisSetNX(key, value string, expiration time.Duration) bool {
 
 // RedisDel 删除 Redis Key
 func RedisDel(key string) error {
+	if err := ensureRedis(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return RDB.Del(ctx, key).Err()
@@ -90,6 +109,9 @@ func RedisDel(key string) error {
 
 // RedisExists 检查 Key 是否存在
 func RedisExists(key string) (bool, error) {
+	if err := ensureRedis(); err != nil {
+		return false, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	n, err := RDB.Exists(ctx, key).Result()
@@ -98,6 +120,9 @@ func RedisExists(key string) (bool, error) {
 
 // RedisGetDel 获取值并删除 key（用于一次性 Token 读取）
 func RedisGetDel(key string) (string, error) {
+	if err := ensureRedis(); err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return RDB.GetDel(ctx, key).Result()
@@ -158,7 +183,11 @@ func (h *redisPrefixHook) prefixCmd(cmd redis.Cmder) {
 	}
 }
 
-// hasPrefix 检查 key 是否已经包含前缀（防重复）
+// hasPrefix 检查 key 是否已经包含前缀（防重复添加）
 func hasPrefix(key, prefix string) bool {
-	return len(key) > len(prefix) && key[:len(prefix)+1] == prefix+":"
+	if prefix == "" {
+		return false
+	}
+	prefixWithSep := prefix + ":"
+	return len(key) >= len(prefixWithSep) && key[:len(prefixWithSep)] == prefixWithSep
 }

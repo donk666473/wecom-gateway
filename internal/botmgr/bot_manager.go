@@ -199,6 +199,13 @@ func (m *BotManager) GetWeComAdapters() []adapter.AbstractIMAdapter {
 	return adapters
 }
 
+// GetAppCount 获取当前运行的应用数量
+func (m *BotManager) GetAppCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.apps)
+}
+
 // GetAllAdapters 获取所有适配器
 func (m *BotManager) GetAllAdapters() map[string]adapter.AbstractIMAdapter {
 	m.mu.RLock()
@@ -209,11 +216,4 @@ func (m *BotManager) GetAllAdapters() map[string]adapter.AbstractIMAdapter {
 		result[k] = v
 	}
 	return result
-}
-
-// GetAppCount 获取运行中的应用数量
-func (m *BotManager) GetAppCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.apps)
 }

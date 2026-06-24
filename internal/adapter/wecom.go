@@ -143,7 +143,14 @@ func (w *WeComAdapter) dispatchMessage(event *IMEvent) {
 	}
 
 	for _, handler := range w.handlers[eventType] {
-		go handler(event) // 并发处理
+		go func(h MessageHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					utils.Sugar.Errorf("[WeComAdapter] handler panic recovered: %v", r)
+				}
+			}()
+			h(event)
+		}(handler)
 	}
 }
 
