@@ -36,6 +36,7 @@ type wecomEncryptedXML struct {
 
 // wecomDecryptedXML 企微解密后消息结构。
 // 解密后得到的 XML 消息体，包含实际的消息内容。
+// ChatID 字段用于区分群聊（非空 == 群聊消息）。
 type wecomDecryptedXML struct {
 	XMLName      xml.Name `xml:"xml"`
 	ToUserName   string   `xml:"ToUserName"`
@@ -47,6 +48,7 @@ type wecomDecryptedXML struct {
 	AgentID      int      `xml:"AgentID"`
 	Event        string   `xml:"Event"`
 	EventKey     string   `xml:"EventKey"`
+	ChatID       string   `xml:"ChatId"` // 群聊 ID，非空表示群聊消息
 }
 
 // ============================================================================

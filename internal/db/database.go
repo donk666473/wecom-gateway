@@ -4,6 +4,8 @@ package db
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	sqlite "github.com/glebarez/sqlite"
@@ -11,6 +13,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// safeDBNameRegex 数据库名称安全校验正则
+// 仅允许字母、数字、下划线，长度 1-63
+var safeDBNameRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 
 // DatabaseConfig 数据库连接配置
 type DatabaseConfig struct {
@@ -71,8 +77,16 @@ func InitDatabase(cfg *DatabaseConfig, logLevel logger.LogLevel) (*gorm.DB, erro
 	return db, nil
 }
 
-// createDatabaseIfNotExist 尝试创建数据库
+// createDatabaseIfNotExist 尝试创建数据库（使用参数化查询和标识符校验防止 SQL 注入）。
 func createDatabaseIfNotExist(cfg *DatabaseConfig) error {
+	// 校验数据库名，防止 SQL 注入
+	if !safeDBNameRegex.MatchString(cfg.Database) {
+		return fmt.Errorf("数据库名包含非法字符: %s", cfg.Database)
+	}
+
+	// PostgreSQL 标识符安全引用（双引号 + 内部双引号转义）
+	safeDBName := pqQuoteIdentifier(cfg.Database)
+
 	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable TimeZone=Asia/Shanghai",
 		cfg.Host, cfg.Port, cfg.Username, cfg.Password,
@@ -86,16 +100,22 @@ func createDatabaseIfNotExist(cfg *DatabaseConfig) error {
 	sqlDB, _ := db.DB()
 	defer sqlDB.Close()
 
+	// 参数化查询：检查数据库是否存在
 	var exists bool
-	checkSQL := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname='%s')", cfg.Database)
-	if err := db.Raw(checkSQL).Scan(&exists).Error; err != nil {
+	if err := db.Raw("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = ?)", cfg.Database).Scan(&exists).Error; err != nil {
 		return err
 	}
 	if !exists {
-		createSQL := fmt.Sprintf("CREATE DATABASE %s", cfg.Database)
+		createSQL := fmt.Sprintf("CREATE DATABASE %s ENCODING 'UTF8'", safeDBName)
 		return db.Exec(createSQL).Error
 	}
 	return nil
+}
+
+// pqQuoteIdentifier 安全引用 PostgreSQL 标识符（双引号 + 内部双引号转义）。
+func pqQuoteIdentifier(name string) string {
+	escaped := strings.ReplaceAll(name, "\"", "\"\"")
+	return "\"" + escaped + "\""
 }
 
 // LogLevelMap 将字符串日志级别映射为 GORM 日志级别

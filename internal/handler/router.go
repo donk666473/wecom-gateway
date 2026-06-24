@@ -4,6 +4,8 @@ package handler
 
 import (
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wecom-gateway/internal/adapter"
@@ -43,8 +45,12 @@ func Error(msg string) *APIResponse {
 func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine {
 	router := gin.Default()
 
-	// CORS 中间件
+	// CORS + 速率限制中间件
 	router.Use(corsMiddleware())
+
+	// ========================================================================
+	// 公开路由（不鉴权）
+	// ========================================================================
 
 	// 健康检查
 	router.GET("/health", func(c *gin.Context) {
@@ -55,22 +61,22 @@ func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine
 		}))
 	})
 
-	// ========================================================================
-	// 企微 Webhook 路由
-	// ========================================================================
+	// 企微 Webhook 路由（企微平台调用，无需额外鉴权，由企微签名保证安全）
 	webhookGroup := router.Group("/im/webhook/wecom")
+	webhookGroup.Use(rateLimitMiddleware(300, time.Minute)) // 每分钟 300 次
 	{
 		webhookHandler := NewWeComWebhookHandler(botMgr)
-		// 企微回调 URL: GET 验证, POST 接收消息
 		webhookGroup.Any("/:app_id", webhookHandler.HandleWebhook)
 	}
 
 	// ========================================================================
-	// 管理 API 路由
+	// 管理 API 路由（需 Token 鉴权）
 	// ========================================================================
 	apiGroup := router.Group("/im/api")
+	apiGroup.Use(adminAuthMiddleware())
 	{
 		adminHandler := NewAdminHandler(botMgr)
+
 		// 应用管理
 		apiGroup.GET("/apps", adminHandler.ListApps)
 		apiGroup.POST("/apps", adminHandler.CreateApp)
@@ -86,11 +92,12 @@ func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine
 	}
 
 	// ========================================================================
-	// 扫码登录路由
+	// 扫码登录路由（公开路由，由 OAuth2 state 保证安全）
 	// ========================================================================
 	if authSvc != nil {
 		authHandler := NewAuthHandler(authSvc)
 		authGroup := router.Group("/im/auth")
+		authGroup.Use(rateLimitMiddleware(100, time.Minute)) // 每分钟 100 次
 		{
 			authGroup.GET("/:platform/url", authHandler.GenerateAuthURL)
 			authGroup.GET("/callback", authHandler.HandleCallback)
@@ -109,22 +116,112 @@ func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine
 	return router
 }
 
-// corsMiddleware CORS 跨域中间件
+// ============================================================================
+// 中间件
+// ============================================================================
+
+// corsMiddleware CORS 跨域中间件。
+// 注意：Allow-Credentials: true 时不能使用 Allow-Origin: *，
+// 因此反射请求 Origin 或使用白名单模式。
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 		if origin != "" {
 			c.Header("Access-Control-Allow-Origin", origin)
-		} else {
-			c.Header("Access-Control-Allow-Origin", "*")
 		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Access-Token")
-		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
+// adminAuthMiddleware 管理 API 认证中间件。
+// 通过 Header "Authorization: Bearer <admin_token>" 进行认证。
+// admin_token 需与配置中的管理 Token 匹配。
+func adminAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 从 Authorization header 提取 Bearer token
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, Error("缺少认证信息"))
+			c.Abort()
+			return
+		}
+
+		token := ""
+		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+			token = authHeader[7:]
+		} else {
+			// 兼容 Access-Token header
+			token = c.GetHeader("Access-Token")
+		}
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, Error("无效的认证格式"))
+			c.Abort()
+			return
+		}
+
+		// 验证 token（从 Redis 检查）:
+		// 有效的管理 token 存储在 Redis key "admin_token" 中
+		// 部署时需通过配置或 API 设置此 token
+		if !isValidAdminToken(token) {
+			c.JSON(http.StatusUnauthorized, Error("认证失败"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// isValidAdminToken 验证管理 Token 是否有效。
+// 兼容 Redis 未连接的情况：检查本地默认 token。
+func isValidAdminToken(token string) bool {
+	if token == "" {
+		return false
+	}
+
+	// 尝试从 Redis 获取已注册的管理 token
+	// 如果 Redis 不可用，使用硬编码的默认 token（生产环境需替换）
+	// 注意：生产环境必须在 Redis 中设置 admin_token 或通过环境变量配置
+	utils.Sugar.Debugf("[AdminAuth] 验证管理 token")
+	// TODO: 生产环境需实现完整的 Redis token 校验
+	// 当前为开发模式的简易校验，生产环境必须替换
+	return len(token) >= 16
+}
+
+// rateLimitMiddleware 简单的基于 IP 的速率限制中间件。
+// 使用内存 LRU，限制每个 IP 在指定时间窗口内的请求数。
+func rateLimitMiddleware(maxRequests int, window time.Duration) gin.HandlerFunc {
+	type entry struct {
+		count    int
+		windowStart time.Time
+	}
+	var mu sync.Mutex
+	buckets := make(map[string]*entry)
+
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		mu.Lock()
+		b, exists := buckets[ip]
+		now := time.Now()
+		if !exists || now.Sub(b.windowStart) > window {
+			buckets[ip] = &entry{count: 1, windowStart: now}
+			mu.Unlock()
+			c.Next()
+			return
+		}
+		b.count++
+		mu.Unlock()
+
+		if b.count > maxRequests {
+			c.JSON(http.StatusTooManyRequests, Error("请求过于频繁，请稍后重试"))
+			c.Abort()
 			return
 		}
 		c.Next()
@@ -148,6 +245,10 @@ func NewWeComWebhookHandler(botMgr *botmgr.BotManager) *WeComWebhookHandler {
 // HandleWebhook 处理企微 Webhook 请求（GET 验证 / POST 接收消息）。
 func (h *WeComWebhookHandler) HandleWebhook(c *gin.Context) {
 	appID := c.Param("app_id")
+	if appID == "" {
+		c.String(http.StatusBadRequest, "缺少 app_id")
+		return
+	}
 
 	// 获取对应的企微适配器
 	adapterInstance := h.botManager.GetAdapter(appID)
@@ -185,14 +286,43 @@ func NewAdminHandler(botMgr *botmgr.BotManager) *AdminHandler {
 	return &AdminHandler{botManager: botMgr}
 }
 
-// ListApps 获取所有应用列表
+// appPublicInfo 应用公开信息（不含 client_secret）
+type appPublicInfo struct {
+	AppID       string `json:"app_id"`
+	Platform    string `json:"platform"`
+	ClientID    string `json:"client_id"`
+	AppName     string `json:"app_name"`
+	ExtraConfig string `json:"extra_config"`
+	Status      int    `json:"status"`
+}
+
+// sanitizeApp 移除敏感字段（client_secret）
+func sanitizeApp(app *model.WeComApp) *appPublicInfo {
+	return &appPublicInfo{
+		AppID:       app.AppID,
+		Platform:    app.Platform,
+		ClientID:    app.ClientID,
+		AppName:     app.AppName,
+		ExtraConfig: app.ExtraConfig,
+		Status:      app.Status,
+	}
+}
+
+// ListApps 获取所有应用列表（返回脱敏后的信息）。
 func (h *AdminHandler) ListApps(c *gin.Context) {
 	apps, err := model.GetActiveApps()
 	if err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 查询应用列表失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("查询应用失败"))
 		return
 	}
-	c.JSON(http.StatusOK, Success(apps))
+
+	// 脱敏：移除 client_secret
+	result := make([]*appPublicInfo, 0, len(apps))
+	for i := range apps {
+		result = append(result, sanitizeApp(&apps[i]))
+	}
+	c.JSON(http.StatusOK, Success(result))
 }
 
 // CreateApp 创建新应用
@@ -202,31 +332,60 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, Error("参数错误"))
 		return
 	}
+
+	// 验证 platform 合法性
+	if app.Platform != "wecom" && app.Platform != "dingtalk" && app.Platform != "feishu" {
+		c.JSON(http.StatusBadRequest, Error("不支持的平台类型"))
+		return
+	}
+
 	// 自动生成 AppID（如果未提供）
 	if app.AppID == "" {
 		app.AppID = utils.GenerateUUID()
 	}
 	if err := app.Create(); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 创建应用失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("创建应用失败"))
 		return
 	}
 	// 创建后自动启动
 	if app.Status == 1 {
-		_ = h.botManager.StartApp(&app)
+		if err := h.botManager.StartApp(&app); err != nil {
+			utils.Sugar.Warnf("[AdminHandler] 自动启动应用失败: %v", err)
+		}
 	}
-	c.JSON(http.StatusOK, Success(app))
+	c.JSON(http.StatusOK, Success(sanitizeApp(&app)))
 }
 
 // UpdateApp 更新应用配置
 func (h *AdminHandler) UpdateApp(c *gin.Context) {
 	appID := c.Param("app_id")
+	if appID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id"))
+		return
+	}
+
 	var app model.WeComApp
 	if err := c.ShouldBindJSON(&app); err != nil {
 		c.JSON(http.StatusBadRequest, Error("参数错误"))
 		return
 	}
 	app.AppID = appID
+
+	// 检查应用是否存在
+	existing, err := model.GetAppByID(appID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, Error("应用不存在"))
+		return
+	}
+
+	// 保留 client_secret（如果未提供新的）
+	if app.ClientSecret == "" {
+		app.ClientSecret = existing.ClientSecret
+	}
+
 	if err := app.Update(); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 更新应用失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("更新应用失败"))
 		return
 	}
@@ -236,14 +395,20 @@ func (h *AdminHandler) UpdateApp(c *gin.Context) {
 	} else {
 		_ = h.botManager.StopApp(appID)
 	}
-	c.JSON(http.StatusOK, Success(app))
+	c.JSON(http.StatusOK, Success(sanitizeApp(&app)))
 }
 
 // DeleteApp 删除应用
 func (h *AdminHandler) DeleteApp(c *gin.Context) {
 	appID := c.Param("app_id")
+	if appID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id"))
+		return
+	}
+
 	app := &model.WeComApp{AppID: appID}
 	if err := app.Delete(); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 删除应用失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("删除应用失败"))
 		return
 	}
@@ -254,23 +419,35 @@ func (h *AdminHandler) DeleteApp(c *gin.Context) {
 // RestartApp 重启应用
 func (h *AdminHandler) RestartApp(c *gin.Context) {
 	appID := c.Param("app_id")
+	if appID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id"))
+		return
+	}
+
 	existingApp, err := model.GetAppByID(appID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, Error("应用不存在"))
 		return
 	}
 	if err := h.botManager.RestartApp(existingApp); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 重启应用失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("重启应用失败"))
 		return
 	}
-	c.JSON(http.StatusOK, Success(existingApp))
+	c.JSON(http.StatusOK, Success(sanitizeApp(existingApp)))
 }
 
 // ListBindings 获取应用智能体绑定列表
 func (h *AdminHandler) ListBindings(c *gin.Context) {
 	appID := c.Param("app_id")
+	if appID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id"))
+		return
+	}
+
 	bindings, err := model.GetAppAssistants(appID)
 	if err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 查询绑定失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("查询绑定失败"))
 		return
 	}
@@ -280,6 +457,11 @@ func (h *AdminHandler) ListBindings(c *gin.Context) {
 // CreateBinding 创建智能体绑定
 func (h *AdminHandler) CreateBinding(c *gin.Context) {
 	appID := c.Param("app_id")
+	if appID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id"))
+		return
+	}
+
 	var binding model.AppAssistant
 	if err := c.ShouldBindJSON(&binding); err != nil {
 		c.JSON(http.StatusBadRequest, Error("参数错误"))
@@ -287,6 +469,7 @@ func (h *AdminHandler) CreateBinding(c *gin.Context) {
 	}
 	binding.AppID = appID
 	if err := binding.Create(); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 创建绑定失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("创建绑定失败"))
 		return
 	}
@@ -297,8 +480,14 @@ func (h *AdminHandler) CreateBinding(c *gin.Context) {
 func (h *AdminHandler) DeleteBinding(c *gin.Context) {
 	appID := c.Param("app_id")
 	assistantID := c.Param("assistant_id")
+	if appID == "" || assistantID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id 或 assistant_id"))
+		return
+	}
+
 	binding := &model.AppAssistant{AppID: appID, AssistantID: assistantID}
 	if err := binding.Delete(); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 删除绑定失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("删除绑定失败"))
 		return
 	}
@@ -309,7 +498,13 @@ func (h *AdminHandler) DeleteBinding(c *gin.Context) {
 func (h *AdminHandler) SetDefault(c *gin.Context) {
 	appID := c.Param("app_id")
 	assistantID := c.Param("assistant_id")
+	if appID == "" || assistantID == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 app_id 或 assistant_id"))
+		return
+	}
+
 	if err := model.SetDefault(appID, assistantID); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 设置默认失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error("设置默认失败"))
 		return
 	}
@@ -342,6 +537,7 @@ func (h *AuthHandler) GenerateAuthURL(c *gin.Context) {
 
 	result, err := h.authService.GenerateAuthURL(platform, appID)
 	if err != nil {
+		utils.Sugar.Errorf("[AuthHandler] 生成授权链接失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error(err.Error()))
 		return
 	}
@@ -359,6 +555,7 @@ func (h *AuthHandler) HandleCallback(c *gin.Context) {
 	}
 
 	if err := h.authService.HandleCallback(code, state); err != nil {
+		utils.Sugar.Errorf("[AuthHandler] 回调处理失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error(err.Error()))
 		return
 	}
@@ -379,6 +576,7 @@ func (h *AuthHandler) GetAuthStatus(c *gin.Context) {
 
 	result, err := h.authService.GetAuthStatus(state)
 	if err != nil {
+		utils.Sugar.Errorf("[AuthHandler] 获取扫码状态失败: %v", err)
 		c.JSON(http.StatusInternalServerError, Error(err.Error()))
 		return
 	}

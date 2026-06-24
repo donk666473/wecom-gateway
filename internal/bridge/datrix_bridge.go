@@ -146,32 +146,31 @@ func (b *DatrixBridgeImpl) CheckTokenValid(token string) bool {
 }
 
 // GenerateFreePassword 生成免密登录密码。
-// 使用配置的 AES Key 和 Signing Key 加密用户信息。
+// 使用配置的 AES Key 加密用户信息。
 // 注意：此方法需要根据 DATRIX 平台的免密登录算法实际实现。
 // 当前使用 AES-CBC 加密，实际算法以 DATRIX 平台规范为准。
 func (b *DatrixBridgeImpl) GenerateFreePassword(userName string) string {
 	data := fmt.Sprintf(`{"userName":"%s"}`, userName)
 
 	if common.FreeLoginAESKey != "" {
-		// 解码 AES Key
 		key, err := base64.StdEncoding.DecodeString(common.FreeLoginAESKey)
 		if err != nil {
-			utils.Sugar.Warnf("[DatrixBridge] 解码 AES Key 失败: %v", err)
+			utils.Sugar.Errorf("[DatrixBridge] 解码 AES Key 失败，免密登录将失败: %v", err)
 			return data
 		}
 		if len(key) < aes.BlockSize {
-			utils.Sugar.Warnf("[DatrixBridge] AES Key 长度不足: %d", len(key))
+			utils.Sugar.Errorf("[DatrixBridge] AES Key 长度不足: %d，免密登录将失败", len(key))
 			return data
 		}
-		// 使用 AES Key 前 16 字节作为 IV
 		iv := key[:aes.BlockSize]
 		encrypted, err := utils.AESEncrypt(key, iv, []byte(data))
 		if err != nil {
-			utils.Sugar.Warnf("[DatrixBridge] 免密密码加密失败: %v", err)
+			utils.Sugar.Errorf("[DatrixBridge] 免密密码加密失败: %v", err)
 			return data
 		}
 		return encrypted
 	}
+	utils.Sugar.Warn("[DatrixBridge] FreeLoginAESKey 未配置，返回明文密码（生产环境必须配置）")
 	return data
 }
 
@@ -190,6 +189,10 @@ func (b *DatrixBridgeImpl) GetAssistantInfo(token, assistantID string) (*Assista
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("获取智能体信息失败: status=%d", resp.StatusCode)
+	}
+
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
@@ -201,7 +204,9 @@ func (b *DatrixBridgeImpl) GetAssistantInfo(token, assistantID string) (*Assista
 			KbIDs      []string `json:"knowledge_base_ids"`
 		} `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("解析智能体信息响应失败: %w", err)
+	}
 
 	if result.Code != 200 {
 		return nil, fmt.Errorf("获取智能体信息失败: code=%d", result.Code)
@@ -232,13 +237,19 @@ func (b *DatrixBridgeImpl) CreateAssistantSession(token, assistantID, userID str
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("创建会话失败: status=%d", resp.StatusCode)
+	}
+
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
 			SessionID string `json:"sessionId"`
 		} `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("解析会话创建响应失败: %w", err)
+	}
 
 	if result.Code != 200 {
 		return "", fmt.Errorf("创建会话失败: code=%d", result.Code)
@@ -257,15 +268,24 @@ func (b *DatrixBridgeImpl) GetHistory(token, sessionID string) ([][]string, erro
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("获取历史对话失败: status=%d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取历史对话响应失败: %w", err)
+	}
 
 	var result struct {
 		Code int        `json:"code"`
 		Data [][]string `json:"data"`
 	}
-	json.Unmarshal(body, &result)
+	if err := json.Unmarshal(body, &result); err != nil {
+		utils.Sugar.Warnf("[DatrixBridge] 解析历史对话响应失败: %v", err)
+		return nil, nil // 非致命，返回空历史
+	}
 
-	// 如果解析失败，返回空历史（非关键路径）
 	return result.Data, nil
 }
 
@@ -328,9 +348,19 @@ func (b *DatrixBridgeImpl) ChatWithAssistant(token, sessionID, userID string, ms
 }
 
 // readWSResponses 异步读取 WebSocket 响应流。
+// 包含连接保活（ping/pong）和超时控制。
 func (b *DatrixBridgeImpl) readWSResponses(conn *websocket.Conn, respChan chan ChatResponse) {
 	defer close(respChan)
 	defer conn.Close()
+
+	// 设置 ping handler 保持连接活跃
+	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return conn.WriteMessage(websocket.PongMessage, []byte(appData))
+	})
+
+	// 设置初始读取超时
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
 	for {
 		_, message, err := conn.ReadMessage()
@@ -339,9 +369,17 @@ func (b *DatrixBridgeImpl) readWSResponses(conn *websocket.Conn, respChan chan C
 				respChan <- ChatResponse{IsFinal: true}
 				return
 			}
+			if websocket.IsUnexpectedCloseError(err) {
+				utils.Sugar.Warnf("[DatrixBridge] WebSocket 意外关闭: %v", err)
+			} else {
+				utils.Sugar.Warnf("[DatrixBridge] WebSocket 读取错误: %v", err)
+			}
 			respChan <- ChatResponse{IsError: true, Error: err.Error()}
 			return
 		}
+
+		// 每次收到消息后重置读取超时
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
 		var resp struct {
 			Answer string `json:"answer"`

@@ -150,11 +150,16 @@ func (m *BotManager) StopApp(appID string) error {
 	return nil
 }
 
-// RestartApp 重启单个应用（先停后启）
+// RestartApp 重启单个应用（先停后启，原子操作）。
 func (m *BotManager) RestartApp(app *model.WeComApp) error {
-	// 先尝试停止
-	if _, exists := m.apps[app.AppID]; exists {
-		_ = m.StopApp(app.AppID)
+	m.mu.Lock()
+	adapterInstance, exists := m.apps[app.AppID]
+	m.mu.Unlock()
+
+	if exists {
+		if err := m.StopApp(app.AppID); err != nil {
+			utils.Sugar.Warnf("[BotManager] 停止旧应用失败 [app_id=%s]: %v", app.AppID, err)
+		}
 	}
 	// 再启动
 	return m.StartApp(app)

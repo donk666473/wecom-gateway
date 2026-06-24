@@ -51,6 +51,9 @@ type WeComAdapter struct {
 	handlers map[EventType][]MessageHandler // 注册的消息处理器
 	mu       sync.RWMutex                   // 并发保护
 
+	// HTTP 客户端（带超时）
+	httpClient *http.Client
+
 	// AES 密钥（从 encodingAESKey 解码得到）
 	aesKey []byte
 }
@@ -90,6 +93,9 @@ func NewWeComAdapter(app *model.WeComApp) (*WeComAdapter, error) {
 		oauth2AgentID:  cfg.OAuth2AgentID,
 		handlers:       make(map[EventType][]MessageHandler),
 		aesKey:         aesKey,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}, nil
 }
 
@@ -247,6 +253,7 @@ func (w *WeComAdapter) handleMessageReceive(r *http.Request, msgSignature, times
 // ============================================================================
 
 // ReplyMessage 回复消息（企微：按字节分段发送文本消息）。
+// 单聊和群聊使用不同的发送参数。
 func (w *WeComAdapter) ReplyMessage(event *IMEvent, content string) error {
 	accessToken, err := w.GetAccessToken()
 	if err != nil {
@@ -256,8 +263,9 @@ func (w *WeComAdapter) ReplyMessage(event *IMEvent, content string) error {
 	// 按字节数分段（企微单条消息限制 2048 字节）
 	parts := splitByBytes(content, common.WecomChunkSize)
 	for i, part := range parts {
-		if err := w.sendTextMsg(accessToken, event.SenderID, part); err != nil {
-			return fmt.Errorf("发送第%d段消息失败: %w", i+1, err)
+		sendErr := w.sendTextMsgToEvent(accessToken, event, part)
+		if sendErr != nil {
+			return fmt.Errorf("发送第%d段消息失败: %w", i+1, sendErr)
 		}
 		if i < len(parts)-1 {
 			time.Sleep(200 * time.Millisecond) // 避免频率限制
@@ -287,11 +295,15 @@ func (w *WeComAdapter) GetUserInfo(userID string) (*IMUserInfo, error) {
 	reqURL := fmt.Sprintf("%s/user/get?access_token=%s&userid=%s",
 		w.apiBaseURL, accessToken, url.QueryEscape(userID))
 
-	resp, err := http.Get(reqURL)
+	resp, err := w.httpClient.Get(reqURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求企微用户信息失败: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("请求企微用户信息失败: status=%d", resp.StatusCode)
+	}
 
 	var result struct {
 		Errcode int    `json:"errcode"`
@@ -310,7 +322,7 @@ func (w *WeComAdapter) GetUserInfo(userID string) (*IMUserInfo, error) {
 
 	return &IMUserInfo{
 		UserID:   result.UserID,
-		UnionID:  result.UserID, // 企微用 userId 作为唯一标识
+		UnionID:  result.UserID,
 		Nickname: result.Name,
 		Mobile:   result.Mobile,
 	}, nil
@@ -332,11 +344,15 @@ func (w *WeComAdapter) GetAccessToken() (string, error) {
 
 	// 2. 调用企微 API 获取
 	reqURL := fmt.Sprintf("%s/gettoken?corpid=%s&corpsecret=%s", w.apiBaseURL, w.corpID, w.secret)
-	resp, err := http.Get(reqURL)
+	resp, err := w.httpClient.Get(reqURL)
 	if err != nil {
 		return "", fmt.Errorf("请求企微 access_token 失败: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("请求企微 access_token 失败: status=%d", resp.StatusCode)
+	}
 
 	var result struct {
 		AccessToken string `json:"access_token"`
@@ -404,11 +420,15 @@ func (w *WeComAdapter) GetUserByCode(code string) (*IMUserInfo, error) {
 func (w *WeComAdapter) getUserIDByCode(accessToken, code string) (string, error) {
 	reqURL := fmt.Sprintf("%s/auth/getuserinfo?access_token=%s&code=%s",
 		w.apiBaseURL, accessToken, code)
-	resp, err := http.Get(reqURL)
+	resp, err := w.httpClient.Get(reqURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("请求企微 getuserinfo 失败: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("请求企微 getuserinfo 失败: status=%d", resp.StatusCode)
+	}
 
 	var result struct {
 		Errcode    int    `json:"errcode"`
@@ -417,7 +437,7 @@ func (w *WeComAdapter) getUserIDByCode(accessToken, code string) (string, error)
 		UserTicket string `json:"user_ticket"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("解析 getuserinfo 响应失败: %w", err)
 	}
 	if result.Errcode != 0 {
 		return "", fmt.Errorf("企微 getuserinfo 错误: errcode=%d errmsg=%s", result.Errcode, result.Errmsg)
@@ -429,28 +449,60 @@ func (w *WeComAdapter) getUserIDByCode(accessToken, code string) (string, error)
 // 内部方法 — 消息发送
 // ============================================================================
 
-// sendTextMsg 发送企微文本消息（主动推送）。
+// sendTextMsg 发送企微文本消息到指定用户（单聊）。
 func (w *WeComAdapter) sendTextMsg(accessToken, userID, content string) error {
-	reqURL := fmt.Sprintf("%s/message/send?access_token=%s", w.apiBaseURL, accessToken)
-	payload := map[string]interface{}{
+	return w.doSendTextMsg(accessToken, map[string]interface{}{
 		"touser":  userID,
 		"msgtype": "text",
 		"agentid": w.agentID,
 		"text":    map[string]string{"content": content},
-	}
-	body, _ := json.Marshal(payload)
+	})
+}
 
-	resp, err := http.Post(reqURL, "application/json", strings.NewReader(string(body)))
+// sendTextMsgToEvent 根据事件类型（单聊/群聊）发送文本消息。
+func (w *WeComAdapter) sendTextMsgToEvent(accessToken string, event *IMEvent, content string) error {
+	payload := map[string]interface{}{
+		"msgtype": "text",
+		"agentid": w.agentID,
+		"text":    map[string]string{"content": content},
+	}
+
+	if event.ConversationType == common.ConversationTypeGroup {
+		// 群聊：使用 chatid
+		payload["chatid"] = event.ConversationID
+	} else {
+		// 单聊：使用 touser
+		payload["touser"] = event.SenderID
+	}
+
+	return w.doSendTextMsg(accessToken, payload)
+}
+
+// doSendTextMsg 执行文本消息发送（内部方法）。
+func (w *WeComAdapter) doSendTextMsg(accessToken string, payload map[string]interface{}) error {
+	reqURL := fmt.Sprintf("%s/message/send?access_token=%s", w.apiBaseURL, accessToken)
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("序列化消息体失败: %w", err)
+	}
+
+	resp, err := w.httpClient.Post(reqURL, "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("发送企微消息请求失败: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("发送企微消息请求失败: status=%d", resp.StatusCode)
+	}
 
 	var result struct {
 		Errcode int    `json:"errcode"`
 		Errmsg  string `json:"errmsg"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("解析消息发送响应失败: %w", err)
+	}
 
 	if result.Errcode != 0 {
 		return fmt.Errorf("发送企微消息失败: errcode=%d errmsg=%s", result.Errcode, result.Errmsg)
@@ -463,15 +515,25 @@ func (w *WeComAdapter) sendTextMsg(accessToken, userID, content string) error {
 // ============================================================================
 
 // convertToIMEvent 将企微解密后的消息转换为统一 IMEvent 格式。
+// 企微消息通过 ChatId 字段区分单聊/群聊：
+// - 单聊：ChatId 为空，ConversationID = FromUserName
+// - 群聊：ChatId 非空，ConversationID = ChatId
 func (w *WeComAdapter) convertToIMEvent(msg *wecomDecryptedXML) *IMEvent {
 	conversationType := common.ConversationTypeSingle
+	conversationID := msg.FromUserName
+
+	// 检查是否为群聊消息：企微群聊消息包含 ChatId 字段
+	if msg.ChatID != "" {
+		conversationType = common.ConversationTypeGroup
+		conversationID = msg.ChatID
+	}
 
 	return &IMEvent{
 		Platform:         common.PlatformWeCom,
 		MessageID:        msg.MsgID,
 		SenderID:         msg.FromUserName,
 		SenderNick:       "",
-		ConversationID:   msg.FromUserName, // 单聊使用 userId 作为 conversationId
+		ConversationID:   conversationID,
 		ConversationType: conversationType,
 		Content:          msg.Content,
 		MsgType:          msg.MsgType,

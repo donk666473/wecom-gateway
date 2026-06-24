@@ -74,19 +74,25 @@ func (s *ChatStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 		return pipeline.Interrupt(fmt.Errorf("对话连接失败: %w", err))
 	}
 
-	// 5. 收集流式响应
+	// 5. 收集流式响应（增量拼接，每次接收到的 content 为累计值）
 	var fullResponse string
 	for resp := range respChan {
 		if resp.IsError {
 			utils.Sugar.Errorf("[%s] 对话出错: %s", s.Name(), resp.Error)
 			return pipeline.Interrupt(fmt.Errorf("对话出错: %s", resp.Error))
 		}
+		// 流式响应每次返回持续增长的完整内容，直接使用最新值
 		if resp.Content != "" {
 			fullResponse = resp.Content
 		}
 		if resp.IsFinal {
 			break
 		}
+	}
+
+	if fullResponse == "" {
+		utils.Sugar.Warnf("[%s] 对话返回空内容 [session=%s]", s.Name(), ctx.SessionID)
+		fullResponse = "抱歉，我暂时无法回答您的问题，请稍后重试。"
 	}
 
 	ctx.FullResponse = fullResponse
