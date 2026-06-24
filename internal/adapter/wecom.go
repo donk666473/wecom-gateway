@@ -32,9 +32,9 @@ import (
 // 负责企微消息接收（Webhook）、消息回复、用户信息获取和 OAuth2 授权。
 type WeComAdapter struct {
 	// 基础凭证
-	corpID  string // 企业 ID
-	secret  string // 应用 Secret
-	appID   string // 应用唯一标识（UUID）
+	corpID string // 企业 ID
+	secret string // 应用 Secret
+	appID  string // 应用唯一标识（UUID）
 
 	// Webhook 配置
 	token          string // 回调 Token
@@ -49,7 +49,7 @@ type WeComAdapter struct {
 
 	// 消息处理
 	handlers map[EventType][]MessageHandler // 注册的消息处理器
-	mu       sync.RWMutex                    // 并发保护
+	mu       sync.RWMutex                   // 并发保护
 
 	// AES 密钥（从 encodingAESKey 解码得到）
 	aesKey []byte
@@ -404,9 +404,9 @@ func (w *WeComAdapter) getUserIDByCode(accessToken, code string) (string, error)
 	defer resp.Body.Close()
 
 	var result struct {
-		Errcode  int    `json:"errcode"`
-		Errmsg   string `json:"errmsg"`
-		UserID   string `json:"userid"`
+		Errcode    int    `json:"errcode"`
+		Errmsg     string `json:"errmsg"`
+		UserID     string `json:"userid"`
 		UserTicket string `json:"user_ticket"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -447,35 +447,6 @@ func (w *WeComAdapter) sendTextMsg(accessToken, userID, content string) error {
 
 	if result.Errcode != 0 {
 		return fmt.Errorf("发送企微消息失败: errcode=%d errmsg=%s", result.Errcode, result.Errmsg)
-	}
-	return nil
-}
-
-// sendMarkdownMsg 发送企微 Markdown 消息。
-func (w *WeComAdapter) sendMarkdownMsg(accessToken, userID, content string) error {
-	reqURL := fmt.Sprintf("%s/message/send?access_token=%s", w.apiBaseURL, accessToken)
-	payload := map[string]interface{}{
-		"touser":  userID,
-		"msgtype": "markdown",
-		"agentid": w.agentID,
-		"markdown": map[string]string{"content": content},
-	}
-	body, _ := json.Marshal(payload)
-
-	resp, err := http.Post(reqURL, "application/json", strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Errcode int    `json:"errcode"`
-		Errmsg  string `json:"errmsg"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	if result.Errcode != 0 {
-		return fmt.Errorf("发送企微 Markdown 消息失败: errcode=%d errmsg=%s", result.Errcode, result.Errmsg)
 	}
 	return nil
 }
