@@ -67,18 +67,6 @@ type AbstractIMAdapter interface {
 	AppID() string
 
 	// ========================================================================
-	// 扫码登录扩展（OAuth2）
-	// ========================================================================
-
-	// GetOAuth2URL 生成 IM 平台 OAuth2 授权链接。
-	// state: 防 CSRF 的 state 参数
-	GetOAuth2URL(state string) (string, error)
-
-	// GetUserByCode 通过 OAuth2 code 换取 IM 用户信息。
-	// code: OAuth2 回调返回的授权码
-	GetUserByCode(code string) (*IMUserInfo, error)
-
-	// ========================================================================
 	// Token 管理
 	// ========================================================================
 

@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/wecom-gateway/internal/adapter"
-	"github.com/wecom-gateway/internal/auth"
 	"github.com/wecom-gateway/internal/botmgr"
 	"github.com/wecom-gateway/internal/model"
 	"github.com/wecom-gateway/internal/utils"
@@ -41,8 +40,8 @@ func Error(msg string) *APIResponse {
 // ============================================================================
 
 // NewRouter 创建 Gin 路由引擎。
-// 注册企微 Webhook 路由、管理 API 路由和扫码登录路由。
-func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine {
+// 注册企微 Webhook 路由和管理 API 路由。
+func NewRouter(botMgr *botmgr.BotManager) *gin.Engine {
 	router := gin.Default()
 
 	// CORS + 速率限制中间件
@@ -89,20 +88,6 @@ func NewRouter(botMgr *botmgr.BotManager, authSvc *auth.AuthService) *gin.Engine
 		apiGroup.POST("/apps/:app_id/assistants", adminHandler.CreateBinding)
 		apiGroup.DELETE("/apps/:app_id/assistants/:assistant_id", adminHandler.DeleteBinding)
 		apiGroup.POST("/apps/:app_id/assistants/:assistant_id/default", adminHandler.SetDefault)
-	}
-
-	// ========================================================================
-	// 扫码登录路由（公开路由，由 OAuth2 state 保证安全）
-	// ========================================================================
-	if authSvc != nil {
-		authHandler := NewAuthHandler(authSvc)
-		authGroup := router.Group("/im/auth")
-		authGroup.Use(rateLimitMiddleware(100, time.Minute)) // 每分钟 100 次
-		{
-			authGroup.GET("/:platform/url", authHandler.GenerateAuthURL)
-			authGroup.GET("/callback", authHandler.HandleCallback)
-			authGroup.GET("/status", authHandler.GetAuthStatus)
-		}
 	}
 
 	// 404 / 405 处理
@@ -509,76 +494,4 @@ func (h *AdminHandler) SetDefault(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, Success(nil))
-}
-
-// ============================================================================
-// AuthHandler — 扫码登录处理器
-// ============================================================================
-
-// AuthHandler 扫码登录 API 处理器。
-type AuthHandler struct {
-	authService *auth.AuthService
-}
-
-// NewAuthHandler 创建扫码登录处理器
-func NewAuthHandler(authSvc *auth.AuthService) *AuthHandler {
-	return &AuthHandler{authService: authSvc}
-}
-
-// GenerateAuthURL 生成授权链接
-// GET /im/auth/{platform}/url?app_id=xxx
-func (h *AuthHandler) GenerateAuthURL(c *gin.Context) {
-	platform := c.Param("platform")
-	appID := c.Query("app_id")
-	if appID == "" {
-		c.JSON(http.StatusBadRequest, Error("缺少 app_id 参数"))
-		return
-	}
-
-	result, err := h.authService.GenerateAuthURL(platform, appID)
-	if err != nil {
-		utils.Sugar.Errorf("[AuthHandler] 生成授权链接失败: %v", err)
-		c.JSON(http.StatusInternalServerError, Error(err.Error()))
-		return
-	}
-	c.JSON(http.StatusOK, Success(result))
-}
-
-// HandleCallback 处理 OAuth2 回调
-// GET /im/auth/callback?code=xxx&state=yyy
-func (h *AuthHandler) HandleCallback(c *gin.Context) {
-	code := c.Query("code")
-	state := c.Query("state")
-	if code == "" || state == "" {
-		c.JSON(http.StatusBadRequest, Error("缺少 code 或 state 参数"))
-		return
-	}
-
-	if err := h.authService.HandleCallback(code, state); err != nil {
-		utils.Sugar.Errorf("[AuthHandler] 回调处理失败: %v", err)
-		c.JSON(http.StatusInternalServerError, Error(err.Error()))
-		return
-	}
-
-	// 回调成功后返回 HTML 提示（企微要求）
-	c.Data(http.StatusOK, "text/html; charset=utf-8",
-		[]byte("<html><body><h3>授权成功，请返回页面</h3></body></html>"))
-}
-
-// GetAuthStatus 获取扫码状态（前端轮询）
-// GET /im/auth/status?state=xxx
-func (h *AuthHandler) GetAuthStatus(c *gin.Context) {
-	state := c.Query("state")
-	if state == "" {
-		c.JSON(http.StatusBadRequest, Error("缺少 state 参数"))
-		return
-	}
-
-	result, err := h.authService.GetAuthStatus(state)
-	if err != nil {
-		utils.Sugar.Errorf("[AuthHandler] 获取扫码状态失败: %v", err)
-		c.JSON(http.StatusInternalServerError, Error(err.Error()))
-		return
-	}
-	c.JSON(http.StatusOK, Success(result))
 }

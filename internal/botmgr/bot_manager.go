@@ -153,7 +153,7 @@ func (m *BotManager) StopApp(appID string) error {
 // RestartApp 重启单个应用（先停后启，原子操作）。
 func (m *BotManager) RestartApp(app *model.WeComApp) error {
 	m.mu.Lock()
-	adapterInstance, exists := m.apps[app.AppID]
+	_, exists := m.apps[app.AppID]
 	m.mu.Unlock()
 
 	if exists {
@@ -188,20 +188,6 @@ func (m *BotManager) GetAdapter(appID string) adapter.AbstractIMAdapter {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.apps[appID]
-}
-
-// GetWeComAdapters 获取所有企微适配器。
-func (m *BotManager) GetWeComAdapters() []adapter.AbstractIMAdapter {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var adapters []adapter.AbstractIMAdapter
-	for _, a := range m.apps {
-		if a.Platform() == "wecom" {
-			adapters = append(adapters, a)
-		}
-	}
-	return adapters
 }
 
 // GetAppCount 获取当前运行的应用数量

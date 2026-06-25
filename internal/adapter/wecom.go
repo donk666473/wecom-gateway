@@ -44,8 +44,6 @@ type WeComAdapter struct {
 
 	// 扩展配置
 	contactsSecret string // 通讯录 Secret（选填）
-	oauth2CorpID   string // OAuth2 扫码登录 CorpID
-	oauth2AgentID  int    // OAuth2 扫码登录 AgentID
 
 	// 消息处理
 	handlers map[EventType][]MessageHandler // 注册的消息处理器
@@ -89,8 +87,6 @@ func NewWeComAdapter(app *model.WeComApp) (*WeComAdapter, error) {
 		agentID:        cfg.AgentID,
 		apiBaseURL:     apiBaseURL,
 		contactsSecret: cfg.ContactsSecret,
-		oauth2CorpID:   cfg.OAuth2CorpID,
-		oauth2AgentID:  cfg.OAuth2AgentID,
 		handlers:       make(map[EventType][]MessageHandler),
 		aesKey:         aesKey,
 		httpClient: &http.Client{
@@ -378,73 +374,7 @@ func (w *WeComAdapter) GetAccessToken() (string, error) {
 }
 
 // ============================================================================
-// AbstractIMAdapter 接口实现 — OAuth2 扫码登录
-// ============================================================================
-
-// GetOAuth2URL 生成企微授权登录链接。
-// 参照设计文档 4.3 节企微 OAuth2 实现。
-func (w *WeComAdapter) GetOAuth2URL(state string) (string, error) {
-	if w.oauth2CorpID == "" {
-		return "", fmt.Errorf("oauth2_corp_id 未配置")
-	}
-	// 企微 OAuth2 授权链接：https://developer.work.weixin.qq.com/document/path/91022
-	authURL := fmt.Sprintf(
-		"https://open.weixin.qq.com/connect/oauth2/authorize?appid=%s&redirect_uri=%s&response_type=code&scope=snsapi_privateinfo&state=%s&agentid=%d#wechat_redirect",
-		w.oauth2CorpID,
-		url.QueryEscape(common.AuthCallbackURL),
-		state,
-		w.oauth2AgentID,
-	)
-	return authURL, nil
-}
-
-// GetUserByCode 通过 OAuth2 code 换取企微用户信息。
-func (w *WeComAdapter) GetUserByCode(code string) (*IMUserInfo, error) {
-	// 1. 获取 access_token
-	accessToken, err := w.GetAccessToken()
-	if err != nil {
-		return nil, fmt.Errorf("获取 access_token 失败: %w", err)
-	}
-
-	// 2. 通过 code 换取 userid
-	userID, err := w.getUserIDByCode(accessToken, code)
-	if err != nil {
-		return nil, fmt.Errorf("换取 userid 失败: %w", err)
-	}
-
-	// 3. 通过 userid 获取用户详情
-	return w.GetUserInfo(userID)
-}
-
-// getUserIDByCode 通过 OAuth2 code 获取企微 userid
-func (w *WeComAdapter) getUserIDByCode(accessToken, code string) (string, error) {
-	reqURL := fmt.Sprintf("%s/auth/getuserinfo?access_token=%s&code=%s",
-		w.apiBaseURL, accessToken, code)
-	resp, err := w.httpClient.Get(reqURL)
-	if err != nil {
-		return "", fmt.Errorf("请求企微 getuserinfo 失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("请求企微 getuserinfo 失败: status=%d", resp.StatusCode)
-	}
-
-	var result struct {
-		Errcode    int    `json:"errcode"`
-		Errmsg     string `json:"errmsg"`
-		UserID     string `json:"userid"`
-		UserTicket string `json:"user_ticket"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("解析 getuserinfo 响应失败: %w", err)
-	}
-	if result.Errcode != 0 {
-		return "", fmt.Errorf("企微 getuserinfo 错误: errcode=%d errmsg=%s", result.Errcode, result.Errmsg)
-	}
-	return result.UserID, nil
-}
-
+// 内部方法 — 消息发送
 // ============================================================================
 // 内部方法 — 消息发送
 // ============================================================================

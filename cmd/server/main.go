@@ -20,14 +20,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"reflect"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wecom-gateway/config"
 	"github.com/wecom-gateway/internal/adapter"
-	"github.com/wecom-gateway/internal/auth"
 	"github.com/wecom-gateway/internal/botmgr"
 	"github.com/wecom-gateway/internal/bridge"
 	"github.com/wecom-gateway/internal/common"
@@ -37,64 +35,6 @@ import (
 	"github.com/wecom-gateway/internal/processor"
 	"github.com/wecom-gateway/internal/utils"
 )
-
-type bridgeAuthAdapter struct {
-	impl *bridge.DatrixBridgeImpl
-}
-
-func (a *bridgeAuthAdapter) Login(param *auth.LoginParam) (string, string, error) {
-	if param == nil {
-		return a.impl.Login(nil)
-	}
-
-	bridgeParam := &bridge.LoginParam{}
-	if err := copyStructFields(bridgeParam, param); err != nil {
-		return "", "", err
-	}
-
-	return a.impl.Login(bridgeParam)
-}
-
-func (a *bridgeAuthAdapter) GenerateFreePassword(userName string) string {
-	return a.impl.GenerateFreePassword(userName)
-}
-
-func (a *bridgeAuthAdapter) SearchUser(platform, unionID string) (bool, string, error) {
-	return a.impl.SearchUser(platform, unionID)
-}
-
-func copyStructFields(dst, src interface{}) error {
-	dv := reflect.ValueOf(dst)
-	sv := reflect.ValueOf(src)
-	if dv.Kind() != reflect.Ptr || sv.Kind() != reflect.Ptr {
-		return fmt.Errorf("copyStructFields requires pointer values")
-	}
-
-	dv = dv.Elem()
-	sv = sv.Elem()
-	if dv.Kind() != reflect.Struct || sv.Kind() != reflect.Struct {
-		return fmt.Errorf("copyStructFields requires struct pointers")
-	}
-
-	for i := 0; i < dv.NumField(); i++ {
-		dField := dv.Type().Field(i)
-		if !dField.IsExported() {
-			continue
-		}
-
-		sField := sv.FieldByName(dField.Name)
-		if !sField.IsValid() || !sField.CanInterface() {
-			continue
-		}
-		if !sField.Type().AssignableTo(dField.Type) {
-			continue
-		}
-
-		dv.Field(i).Set(sField)
-	}
-
-	return nil
-}
 
 func main() {
 	log.Println("[WECOM-GATEWAY] 正在启动企微对接网关...")
@@ -193,12 +133,7 @@ func main() {
 	}
 
 	// ========================================================================
-	// Stage 8: 创建 AuthService（扫码登录）
-	// ========================================================================
-	authService := auth.NewAuthService(botMgr, &bridgeAuthAdapter{impl: datrixBridge})
-
-	// ========================================================================
-	// Stage 9: 启动 HTTP 服务
+	// Stage 8: 启动 HTTP 服务
 	// ========================================================================
 	ginMode := cfg.Server.Mode
 	if ginMode == "debug" {
@@ -207,7 +142,7 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	router := handler.NewRouter(botMgr, authService)
+	router := handler.NewRouter(botMgr)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
@@ -227,7 +162,7 @@ func main() {
 	}()
 
 	// ========================================================================
-	// Stage 10: 等待退出信号并优雅关闭
+	// Stage 9: 等待退出信号并优雅关闭
 	// ========================================================================
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -295,9 +230,4 @@ func populateCommonConfig(cfg *config.Config) {
 
 	// 企微配置
 	common.WeComAPIBaseURL = cfg.WeCom.APIBaseURL
-
-	// 扫码登录
-	common.AuthCallbackURL = cfg.Auth.CallbackURL
-	common.AuthStateTTL = time.Duration(cfg.Auth.StateTTL) * time.Second
-	common.AuthTokenTTL = time.Duration(cfg.Auth.TokenTTL) * time.Second
 }

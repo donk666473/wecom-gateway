@@ -16,10 +16,6 @@ type WeComExtraConfig struct {
 	ContactsSecret string `json:"contacts_secret,omitempty"`
 	// APIBaseURL 企微 API 基地址（默认 https://qyapi.weixin.qq.com/cgi-bin）
 	APIBaseURL string `json:"api_base_url,omitempty"`
-	// OAuth2CorpID 扫码登录使用的 CorpID（选填）
-	OAuth2CorpID string `json:"oauth2_corp_id,omitempty"`
-	// OAuth2AgentID 扫码登录使用的应用 AgentID（选填）
-	OAuth2AgentID int `json:"oauth2_agent_id,omitempty"`
 	// WebhookURL 回调 URL（用于企微 Webhook 模式）
 	WebhookURL string `json:"webhook_url,omitempty"`
 }

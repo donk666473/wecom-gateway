@@ -20,7 +20,6 @@ type Config struct {
 	Datrix   DatrixConfig   `mapstructure:"datrix"`
 	WeCom    WeComConfig    `mapstructure:"wecom"`
 	Message  MessageConfig  `mapstructure:"message"`
-	Auth     AuthConfig     `mapstructure:"auth"`
 }
 
 // ServerConfig HTTP 服务器配置
@@ -91,13 +90,6 @@ type MessageConfig struct {
 	BatchSize    int `mapstructure:"batch_size"`     // 流式更新批次大小
 	ChunkSize    int `mapstructure:"chunk_size"`     // 企微分段消息最大字节数
 	PollInterval int `mapstructure:"poll_interval"`  // 前端轮询间隔（毫秒）
-}
-
-// AuthConfig 扫码登录配置
-type AuthConfig struct {
-	CallbackURL string `mapstructure:"callback_url"`
-	StateTTL    int    `mapstructure:"state_ttl"`
-	TokenTTL    int    `mapstructure:"token_ttl"`
 }
 
 // LoadConfig 加载配置文件，支持命令行参数和环境变量覆盖。
@@ -189,9 +181,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("message.batch_size", 50)
 	v.SetDefault("message.chunk_size", 2048)
 	v.SetDefault("message.poll_interval", 1500)
-	v.SetDefault("auth.callback_url", "https://your-domain.com/im/auth/callback")
-	v.SetDefault("auth.state_ttl", 300)
-	v.SetDefault("auth.token_ttl", 30)
 }
 
 // LoadConfigFromBytes 从 YAML 字节数组加载配置（用于测试）

@@ -47,11 +47,6 @@ var (
 	// 消息配置
 	MessageBatchSize int
 	WecomChunkSize   int
-
-	// 扫码登录配置
-	AuthCallbackURL string
-	AuthStateTTL    time.Duration
-	AuthTokenTTL    time.Duration
 )
 
 // ============================================================================
@@ -100,12 +95,9 @@ const (
 // 以下常量仅定义业务 Key 后缀，最终 Key 格式为：{prefix}:{常量值}
 // ============================================================================
 const (
-	RedisPrefixToken      = "access_token"   // 企微 access_token 缓存
-	RedisPrefixDedup      = "dedup"          // 消息去重
-	RedisPrefixTokenUser  = "token"          // 用户 Token 缓存
-	RedisPrefixAuthState  = "auth:state"     // 扫码登录 state
-	RedisPrefixAuthToken  = "auth:token"     // 扫码登录临时 Token
-	RedisPrefixAuthResult = "auth:result"    // 扫码登录结果
+	RedisPrefixToken     = "access_token"   // 企微 access_token 缓存
+	RedisPrefixDedup     = "dedup"          // 消息去重
+	RedisPrefixTokenUser = "token"          // 用户 Token 缓存
 )
 
 // ============================================================================

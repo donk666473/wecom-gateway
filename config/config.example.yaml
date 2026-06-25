@@ -48,8 +48,3 @@ message:
   batch_size: 50
   chunk_size: 2048
   poll_interval: 1500
-
-auth:
-  callback_url: "https://your-domain.com/im/auth/callback"
-  state_ttl: 300
-  token_ttl: 30
