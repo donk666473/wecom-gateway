@@ -7,6 +7,7 @@
 package bridge
 
 import (
+	"bytes"
 	"crypto/aes"
 	"encoding/base64"
 	"encoding/json"
@@ -180,10 +181,14 @@ func (b *DatrixBridgeImpl) GenerateFreePassword(userName string) string {
 
 // GetAssistantInfo 获取智能体详细信息。
 func (b *DatrixBridgeImpl) GetAssistantInfo(token, assistantID string) (*AssistantInfo, error) {
-	apiPath := fmt.Sprintf("/api/app/at/api/v1/assistant/%s?access-token=%s",
-		assistantID, url.QueryEscape(token))
+	apiPath := fmt.Sprintf("/api/v1/assistant/%s", assistantID)
+	req, err := http.NewRequest("GET", common.DatrixAssistantURL+apiPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建获取智能体信息请求失败: %w", err)
+	}
+	req.Header.Set("access-token", token)
 
-	resp, err := b.httpClient.Get(common.DatrixAssistantURL + apiPath)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("获取智能体信息失败: %w", err)
 	}
@@ -228,10 +233,20 @@ func (b *DatrixBridgeImpl) GetAssistantInfo(token, assistantID string) (*Assista
 
 // CreateAssistantSession 创建智能体对话会话。
 func (b *DatrixBridgeImpl) CreateAssistantSession(token, assistantID, userID string) (string, error) {
-	apiPath := fmt.Sprintf("/api/app/at/api/v1/assistant/session/%s?access-token=%s&assistantId=%s",
-		userID, url.QueryEscape(token), assistantID)
+	apiPath := fmt.Sprintf("/api/v1/assistant/session/%s", userID)
+	body, err := json.Marshal(map[string]string{"assistant_id": assistantID})
+	if err != nil {
+		return "", fmt.Errorf("序列化会话请求参数失败: %w", err)
+	}
 
-	resp, err := b.httpClient.Get(common.DatrixAssistantURL + apiPath)
+	req, err := http.NewRequest("POST", common.DatrixAssistantURL+apiPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("创建会话请求失败: %w", err)
+	}
+	req.Header.Set("access-token", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("创建会话失败: %w", err)
 	}
@@ -244,7 +259,7 @@ func (b *DatrixBridgeImpl) CreateAssistantSession(token, assistantID, userID str
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
-			SessionID string `json:"sessionId"`
+			SessionID string `json:"session_id"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -259,10 +274,14 @@ func (b *DatrixBridgeImpl) CreateAssistantSession(token, assistantID, userID str
 
 // GetHistory 获取对话历史上下文（最近 20 条）。
 func (b *DatrixBridgeImpl) GetHistory(token, sessionID string) ([][]string, error) {
-	apiPath := fmt.Sprintf("/api/app/at/api/v1/assistant/%s/history?access-token=%s",
-		sessionID, url.QueryEscape(token))
+	apiPath := fmt.Sprintf("/api/v1/assistant/session/%s?history_offset=0&history_limit=20&desc=true", sessionID)
+	req, err := http.NewRequest("GET", common.DatrixAssistantURL+apiPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建历史请求失败: %w", err)
+	}
+	req.Header.Set("access-token", token)
 
-	resp, err := b.httpClient.Get(common.DatrixAssistantURL + apiPath)
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("获取历史对话失败: %w", err)
 	}
@@ -278,15 +297,40 @@ func (b *DatrixBridgeImpl) GetHistory(token, sessionID string) ([][]string, erro
 	}
 
 	var result struct {
-		Code int        `json:"code"`
-		Data [][]string `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+		Result  struct {
+			History []struct {
+				Question string `json:"question"`
+				Answer   string `json:"answer"`
+			} `json:"history"`
+		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		utils.Sugar.Warnf("[DatrixBridge] 解析历史对话响应失败: %v", err)
 		return nil, nil // 非致命，返回空历史
 	}
 
-	return result.Data, nil
+	if result.Code != 200 {
+		return nil, fmt.Errorf("获取历史对话失败: code=%d, message=%s", result.Code, result.Message)
+	}
+
+	history := make([][]string, 0)
+	if len(result.Result.History) > 0 {
+		for _, item := range result.Result.History {
+			history = append(history, []string{item.Question, item.Answer})
+		}
+		return history, nil
+	}
+
+	if len(result.Data) > 0 {
+		if err := json.Unmarshal(result.Data, &history); err == nil {
+			return history, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // ============================================================================
@@ -311,7 +355,7 @@ func (b *DatrixBridgeImpl) ChatWithAssistant(token, sessionID, userID string, ms
 	wsURL := url.URL{
 		Scheme: wsScheme,
 		Host:   baseURL.Host,
-		Path:   fmt.Sprintf("/api/app/at/api/v1/assistant/%s/chat", sessionID),
+		Path:   fmt.Sprintf("/api/v1/assistant/%s/chat", sessionID),
 	}
 	query := wsURL.Query()
 	query.Add("access-token", token)
