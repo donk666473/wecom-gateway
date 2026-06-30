@@ -144,3 +144,45 @@ func DecryptPassword(encrypted, keyHex, ivHex string) (string, error) {
 	}
 	return string(decrypted), nil
 }
+
+// DecryptCompat 兼容 dingtalkrobot 项目的 AES-CBC 密码解密。
+// 使用与 dingtalkrobot 相同的默认密钥，自动处理 base64 编码的加密密码。
+// 如果解密失败，返回原始字符串（兼容明文密码）。
+func DecryptCompat(encrypted string) string {
+	if encrypted == "" {
+		return encrypted
+	}
+
+	// 检查是否为 base64 加密格式（结尾有 = 或 ==）
+	isBase64Encoded := false
+	for _, c := range encrypted {
+		if c == '=' {
+			isBase64Encoded = true
+			break
+		}
+	}
+	if !isBase64Encoded {
+		return encrypted // 明文密码，直接返回
+	}
+
+	// 与 dingtalkrobot 相同的 AES key 和 IV
+	key := []byte("b558a55ed617dab7")
+	iv := []byte("cdccB3uiWDu7mcxw")
+
+	plainBytes, err := AESDecrypt(key, iv, encrypted)
+	if err != nil {
+		return encrypted // 解密失败，当作明文使用
+	}
+	// 去除尾部可能的 \x00 填充
+	plain := string(plainBytes)
+	plain = trimNullBytes(plain)
+	return plain
+}
+
+// trimNullBytes 去除字符串尾部的 null 字节。
+func trimNullBytes(s string) string {
+	for len(s) > 0 && s[len(s)-1] == 0 {
+		s = s[:len(s)-1]
+	}
+	return s
+}

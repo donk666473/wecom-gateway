@@ -10,7 +10,7 @@
 // 6. BuildPipeline— 创建消息处理 Pipeline
 // 7. StartBots    — 启动所有 IM 应用
 // 8. StartServer  — 启动 HTTP 服务
-// 9. WaitShutdown — 优雅退出
+// 9. WaitShutdown — 退出
 package main
 
 import (
@@ -67,14 +67,20 @@ func main() {
 
 	// ========================================================================
 	// Stage 3: 初始化数据库（参照 LangBot MigrationStage）
+	// 自动解密加密密码（兼容 dingtalkrobot 的 AES-CBC 加密格式）
 	// ========================================================================
+	dbPassword := cfg.Database.Password
+	if dbPassword != "" {
+		dbPassword = utils.DecryptCompat(dbPassword)
+		utils.Sugar.Debug("数据库密码已处理（兼容加密格式）")
+	}
 	dbInstance, err := db.InitDatabase(&db.DatabaseConfig{
 		Host:            cfg.Database.Host,
 		Port:            cfg.Database.Port,
 		DriverName:      cfg.Database.DriverName,
 		Database:        cfg.Database.Database,
 		Username:        cfg.Database.Username,
-		Password:        cfg.Database.Password,
+		Password:        dbPassword,
 		MaxIdleConns:    cfg.Database.MaxIdleConns,
 		MaxOpenConns:    cfg.Database.MaxOpenConns,
 		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,

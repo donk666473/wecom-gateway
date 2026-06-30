@@ -17,7 +17,7 @@ type WeComApp struct {
 	ClientSecret string    `gorm:"type:varchar(500);comment:应用secret/AppSecret" json:"client_secret"`
 	AppName      string    `gorm:"type:varchar(200);comment:应用名称" json:"app_name"`
 	ExtraConfig  string    `gorm:"type:text;comment:平台特有配置JSON" json:"extra_config"`
-	Status       int       `gorm:"type:tinyint;default:1;comment:状态 0=禁用 1=启用" json:"status"`
+	Status       int       `gorm:"type:smallint;default:1;comment:状态 0=禁用 1=启用" json:"status"`
 	CreatedAt    time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt    time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

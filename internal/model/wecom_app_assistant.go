@@ -14,7 +14,7 @@ type AppAssistant struct {
 	AppID       string    `gorm:"type:varchar(64);uniqueIndex:uk_app_assistant;not null;comment:IM应用ID" json:"app_id"`
 	AssistantID string    `gorm:"type:varchar(100);uniqueIndex:uk_app_assistant;not null;comment:智能体ID" json:"assistant_id"`
 	BindingName string    `gorm:"type:varchar(200);comment:绑定名称" json:"binding_name"`
-	IsDefault   int       `gorm:"type:tinyint;default:0;comment:是否默认智能体 0=否 1=是" json:"is_default"`
+	IsDefault   int       `gorm:"type:smallint;default:0;comment:是否默认智能体 0=否 1=是" json:"is_default"`
 	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

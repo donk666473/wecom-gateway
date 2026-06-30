@@ -105,7 +105,7 @@ func LoadConfig() (*Config, error) {
 	pflag.String("log.file", "/var/log/wecom-gateway.log", "日志文件路径")
 	pflag.String("log.level", "info", "日志级别")
 	pflag.String("db.host", "127.0.0.1", "数据库地址")
-	pflag.Int("db.port", 3306, "数据库端口")
+	pflag.Int("db.port", 5432, "数据库端口")
 	pflag.String("db.database", "asset", "数据库名")
 	pflag.String("db.username", "root", "数据库用户名")
 	pflag.String("db.password", "", "数据库密码")
