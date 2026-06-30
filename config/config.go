@@ -24,8 +24,9 @@ type Config struct {
 
 // ServerConfig HTTP 服务器配置
 type ServerConfig struct {
-	Port int    `mapstructure:"port"`
-	Mode string `mapstructure:"mode"` // debug / release / test
+	Port       int    `mapstructure:"port"`
+	Mode       string `mapstructure:"mode"`        // debug / release / test
+	AdminToken string `mapstructure:"admin_token"` // 管理 API 认证 Token
 }
 
 // LogConfig 日志配置
@@ -153,6 +154,7 @@ func LoadConfig() (*Config, error) {
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.mode", "release")
+	v.SetDefault("server.admin_token", "")
 	v.SetDefault("log.file", "/var/log/wecom-gateway.log")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.max_size", 100)

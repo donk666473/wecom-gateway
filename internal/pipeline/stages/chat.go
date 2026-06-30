@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/wecom-gateway/internal/bridge"
+	"github.com/wecom-gateway/internal/common"
 	"github.com/wecom-gateway/internal/pipeline"
 	"github.com/wecom-gateway/internal/utils"
 )
@@ -94,6 +95,9 @@ func (s *ChatStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 		utils.Sugar.Warnf("[%s] 对话返回空内容 [session=%s]", s.Name(), ctx.SessionID)
 		fullResponse = "抱歉，我暂时无法回答您的问题，请稍后重试。"
 	}
+
+	// 处理媒体链接：将 DATRIX 返回的相对路径图片/链接转换为完整 URL
+	fullResponse = common.ProcessMediaLinks(fullResponse, ctx.DatrixToken)
 
 	ctx.FullResponse = fullResponse
 	utils.Sugar.Infof("[%s] 对话完成 [session=%s, len=%d]",

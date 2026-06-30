@@ -94,16 +94,8 @@ func (m *BotManager) StartApp(app *model.WeComApp) error {
 		return nil
 	}
 
-	// 根据平台类型创建适配器
-	var adapterInstance adapter.AbstractIMAdapter
-	var err error
-
-	switch app.Platform {
-	case "wecom":
-		adapterInstance, err = adapter.NewWeComAdapter(app)
-	default:
-		return fmt.Errorf("不支持的平台类型: %s", app.Platform)
-	}
+	// 通过注册表创建适配器（支持多平台扩展，无需修改 BotManager）
+	adapterInstance, err := adapter.CreateAdapter(app)
 	if err != nil {
 		return fmt.Errorf("创建适配器失败: %w", err)
 	}

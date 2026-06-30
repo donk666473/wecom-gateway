@@ -24,6 +24,14 @@ import (
 	"github.com/wecom-gateway/internal/utils"
 )
 
+// init 将企微适配器注册到全局注册表。
+// 新增平台适配器时，参照此处使用 RegisterAdapter 自注册。
+func init() {
+	RegisterAdapter("wecom", func(app *model.WeComApp) (AbstractIMAdapter, error) {
+		return NewWeComAdapter(app)
+	})
+}
+
 // ============================================================================
 // WeComAdapter — 企微适配器实现 AbstractIMAdapter 接口
 // ============================================================================

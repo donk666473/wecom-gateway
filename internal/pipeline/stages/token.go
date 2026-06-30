@@ -47,8 +47,10 @@ func (s *TokenStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	cacheKey := fmt.Sprintf("%s:%s:%s", common.RedisPrefixTokenUser, event.AppID, event.SenderID)
 
 	// 1. 尝试从 Redis 获取缓存的 Token
-	if cachedToken, err := db.RedisGet(cacheKey); err == nil && cachedToken != "" {
-		if s.bridgeTokenManager.CheckTokenValid(cachedToken) {
+	if db.RDB != nil {
+		if cachedToken, err := db.RedisGet(cacheKey); err == nil && cachedToken != "" {
+			// Token 在 TTL 内视为有效，跳过 CheckTokenValid API 调用
+			// DATRIX Token 有效期 24h，Redis TTL 已对齐，无需额外验证
 			ctx.DatrixToken = cachedToken
 
 			// 尝试从 sessions 表获取已关联的 userId
@@ -62,7 +64,8 @@ func (s *TokenStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 			utils.Sugar.Debugf("[%s] Token缓存命中 [user=%s]", s.Name(), userName)
 			return pipeline.Continue()
 		}
-		utils.Sugar.Debugf("[%s] Token缓存已过期，重新获取", s.Name())
+	} else {
+		utils.Sugar.Warnf("[%s] Redis 不可用，直接免密登录", s.Name())
 	}
 
 	// 2. 免密登录获取新 Token
@@ -78,7 +81,7 @@ func (s *TokenStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 		return pipeline.Interrupt(fmt.Errorf("免密登录失败: %w", err))
 	}
 
-	// 3. 缓存 Token
+	// 3. 缓存 Token（Redis 不可用时静默跳过）
 	_ = db.RedisSet(cacheKey, token, common.TokenTTL)
 
 	ctx.DatrixToken = token

@@ -34,7 +34,13 @@ func (s *DedupStage) Process(ctx *pipeline.Context) *pipeline.StageResult {
 	}
 
 	cacheKey := fmt.Sprintf("%s:%s", common.RedisPrefixDedup, ctx.Event.MessageID)
-	if !db.RedisSetNX(cacheKey, "1", common.DedupTTL) {
+	// 如果 Redis 不可用，降级放行（避免阻塞所有消息）
+	isDuplicate := db.RedisSetNX(cacheKey, "1", common.DedupTTL)
+	if db.RDB == nil {
+		utils.Sugar.Warnf("[%s] Redis 不可用，跳过去重 [msg_id=%s]", s.Name(), ctx.Event.MessageID)
+		return pipeline.Continue()
+	}
+	if !isDuplicate {
 		utils.Sugar.Infof("[%s] 重复消息已丢弃 [msg_id=%s]", s.Name(), ctx.Event.MessageID)
 		return pipeline.Interrupt(nil) // 重复消息，中断但不报错
 	}

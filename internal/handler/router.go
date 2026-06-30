@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/wecom-gateway/internal/adapter"
 	"github.com/wecom-gateway/internal/botmgr"
+	"github.com/wecom-gateway/internal/common"
+	"github.com/wecom-gateway/internal/db"
 	"github.com/wecom-gateway/internal/model"
 	"github.com/wecom-gateway/internal/utils"
 )
@@ -41,7 +44,8 @@ func Error(msg string) *APIResponse {
 
 // NewRouter 创建 Gin 路由引擎。
 // 注册企微 Webhook 路由和管理 API 路由。
-func NewRouter(botMgr *botmgr.BotManager) *gin.Engine {
+// adminToken: 管理 API 认证 Token，生产环境必须设置。
+func NewRouter(botMgr *botmgr.BotManager, adminToken string) *gin.Engine {
 	router := gin.Default()
 
 	// CORS + 速率限制中间件
@@ -53,10 +57,26 @@ func NewRouter(botMgr *botmgr.BotManager) *gin.Engine {
 
 	// 健康检查
 	router.GET("/health", func(c *gin.Context) {
+		dbStatus := "ok"
+		if model.DB == nil {
+			dbStatus = "disconnected"
+		} else if sqlDB, err := model.DB.DB(); err != nil || sqlDB.Ping() != nil {
+			dbStatus = "unreachable"
+		}
+
+		redisStatus := "ok"
+		if db.RDB == nil {
+			redisStatus = "disconnected"
+		} else if _, err := db.RDB.Ping(c.Request.Context()).Result(); err != nil {
+			redisStatus = "unreachable"
+		}
+
 		c.JSON(http.StatusOK, Success(map[string]interface{}{
 			"status":  "ok",
 			"apps":    botMgr.GetAppCount(),
 			"version": "v1.0.0",
+			"db":      dbStatus,
+			"redis":   redisStatus,
 		}))
 	})
 
@@ -72,7 +92,7 @@ func NewRouter(botMgr *botmgr.BotManager) *gin.Engine {
 	// 管理 API 路由（需 Token 鉴权）
 	// ========================================================================
 	apiGroup := router.Group("/im/api")
-	apiGroup.Use(adminAuthMiddleware())
+	apiGroup.Use(adminAuthMiddleware(adminToken))
 	{
 		adminHandler := NewAdminHandler(botMgr)
 
@@ -128,10 +148,15 @@ func corsMiddleware() gin.HandlerFunc {
 
 // adminAuthMiddleware 管理 API 认证中间件。
 // 通过 Header "Authorization: Bearer <admin_token>" 进行认证。
-// admin_token 需与配置中的管理 Token 匹配。
-func adminAuthMiddleware() gin.HandlerFunc {
+// adminToken: 配置中的管理 Token，为空时开发模式放行。
+func adminAuthMiddleware(adminToken string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 从 Authorization header 提取 Bearer token
+		// 开发模式：adminToken 为空时放行
+		if adminToken == "" {
+			c.Next()
+			return
+		}
+
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, Error("缺少认证信息"))
@@ -143,7 +168,6 @@ func adminAuthMiddleware() gin.HandlerFunc {
 		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
 			token = authHeader[7:]
 		} else {
-			// 兼容 Access-Token header
 			token = c.GetHeader("Access-Token")
 		}
 		if token == "" {
@@ -152,10 +176,8 @@ func adminAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 验证 token（从 Redis 检查）:
-		// 有效的管理 token 存储在 Redis key "admin_token" 中
-		// 部署时需通过配置或 API 设置此 token
-		if !isValidAdminToken(token) {
+		// 常量时间比较防时序攻击
+		if !constantTimeCompare(token, adminToken) {
 			c.JSON(http.StatusUnauthorized, Error("认证失败"))
 			c.Abort()
 			return
@@ -164,20 +186,16 @@ func adminAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-// isValidAdminToken 验证管理 Token 是否有效。
-// 兼容 Redis 未连接的情况：检查本地默认 token。
-func isValidAdminToken(token string) bool {
-	if token == "" {
+// constantTimeCompare 常量时间字符串比较（防时序攻击）。
+func constantTimeCompare(a, b string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-
-	// 尝试从 Redis 获取已注册的管理 token
-	// 如果 Redis 不可用，使用硬编码的默认 token（生产环境需替换）
-	// 注意：生产环境必须在 Redis 中设置 admin_token 或通过环境变量配置
-	utils.Sugar.Debugf("[AdminAuth] 验证管理 token")
-	// TODO: 生产环境需实现完整的 Redis token 校验
-	// 当前为开发模式的简易校验，生产环境必须替换
-	return len(token) >= 16
+	result := 0
+	for i := 0; i < len(a); i++ {
+		result |= int(a[i]) ^ int(b[i])
+	}
+	return result == 0
 }
 
 // rateLimitMiddleware 简单的基于 IP 的速率限制中间件。
@@ -318,10 +336,28 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 		return
 	}
 
-	// 验证 platform 合法性
-	if app.Platform != "wecom" && app.Platform != "dingtalk" && app.Platform != "feishu" {
-		c.JSON(http.StatusBadRequest, Error("不支持的平台类型"))
+	// 验证 platform 合法性（通过适配器注册表）
+	platforms := adapter.SupportedPlatforms()
+	validPlatform := false
+	for _, p := range platforms {
+		if app.Platform == p {
+			validPlatform = true
+			break
+		}
+	}
+	if !validPlatform {
+		c.JSON(http.StatusBadRequest, fmt.Sprintf("不支持的平台类型: %s，支持: %v", app.Platform, platforms))
 		return
+	}
+
+	// 验证企微特有配置（如果 applicable）
+	if app.Platform == "wecom" && app.ExtraConfig != "" {
+		if cfg, err := common.ParseWeComConfig(app.ExtraConfig); err == nil {
+			if err := cfg.Validate(); err != nil {
+				c.JSON(http.StatusBadRequest, Error("企微配置校验失败: "+err.Error()))
+				return
+			}
+		}
 	}
 
 	// 自动生成 AppID（如果未提供）
@@ -362,6 +398,16 @@ func (h *AdminHandler) UpdateApp(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusNotFound, Error("应用不存在"))
 		return
+	}
+
+	// 验证配置（如果有 extra_config）
+	if app.ExtraConfig != "" && existing.Platform == "wecom" {
+		if cfg, parseErr := common.ParseWeComConfig(app.ExtraConfig); parseErr == nil {
+			if valErr := cfg.Validate(); valErr != nil {
+				c.JSON(http.StatusBadRequest, Error("企微配置校验失败: "+valErr.Error()))
+				return
+			}
+		}
 	}
 
 	// 保留 client_secret（如果未提供新的）

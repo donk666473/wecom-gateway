@@ -4,6 +4,7 @@
 server:
   port: 8080
   mode: release  # debug / release / test
+  admin_token: ""  # 管理 API 认证 Token（留空则开发模式，生产必须设置）
 
 log:
   file: /var/log/wecom-gateway.log

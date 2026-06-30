@@ -142,7 +142,7 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	router := handler.NewRouter(botMgr)
+	router := handler.NewRouter(botMgr, cfg.Server.AdminToken)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
