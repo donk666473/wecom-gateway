@@ -11,8 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/wecom-gateway/internal/adapter"
 	"github.com/wecom-gateway/internal/botmgr"
-	"github.com/wecom-gateway/internal/common"
 	"github.com/wecom-gateway/internal/db"
+	"github.com/wecom-gateway/internal/debug"
 	"github.com/wecom-gateway/internal/model"
 	"github.com/wecom-gateway/internal/utils"
 )
@@ -43,12 +43,13 @@ func Error(msg string) *APIResponse {
 // ============================================================================
 
 // NewRouter 创建 Gin 路由引擎。
-// 注册企微 Webhook 路由和管理 API 路由。
+// 注册各平台 Webhook 路由、管理 API 路由和调试路由。
 // adminToken: 管理 API 认证 Token，生产环境必须设置。
 func NewRouter(botMgr *botmgr.BotManager, adminToken string) *gin.Engine {
 	router := gin.Default()
 
-	// CORS + 速率限制中间件
+	// 请求 ID + CORS + 速率限制中间件
+	router.Use(requestIDMiddleware())
 	router.Use(corsMiddleware())
 
 	// ========================================================================
@@ -71,20 +72,27 @@ func NewRouter(botMgr *botmgr.BotManager, adminToken string) *gin.Engine {
 			redisStatus = "unreachable"
 		}
 
+		// 按平台统计应用数
+		platformStats := make(map[string]int)
+		for _, p := range adapter.SupportedPlatforms() {
+			platformStats[p] = len(botMgr.GetAdaptersByPlatform(p))
+		}
+
 		c.JSON(http.StatusOK, Success(map[string]interface{}{
-			"status":  "ok",
-			"apps":    botMgr.GetAppCount(),
-			"version": "v1.0.0",
-			"db":      dbStatus,
-			"redis":   redisStatus,
+			"status":    "ok",
+			"apps":      botMgr.GetAppCount(),
+			"platforms": platformStats,
+			"version":   "v1.0.0",
+			"db":        dbStatus,
+			"redis":     redisStatus,
 		}))
 	})
 
-	// 企微 Webhook 路由（企微平台调用，无需额外鉴权，由企微签名保证安全）
-	webhookGroup := router.Group("/im/webhook/wecom")
+	// 平台 Webhook 路由（由平台签名/鉴权保证安全，此处仅做路由分发）
+	webhookGroup := router.Group("/im/webhook/:platform")
 	webhookGroup.Use(rateLimitMiddleware(300, time.Minute)) // 每分钟 300 次
 	{
-		webhookHandler := NewWeComWebhookHandler(botMgr)
+		webhookHandler := NewPlatformWebhookHandler(botMgr)
 		webhookGroup.Any("/:app_id", webhookHandler.HandleWebhook)
 	}
 
@@ -103,11 +111,26 @@ func NewRouter(botMgr *botmgr.BotManager, adminToken string) *gin.Engine {
 		apiGroup.DELETE("/apps/:app_id", adminHandler.DeleteApp)
 		apiGroup.POST("/apps/:app_id/restart", adminHandler.RestartApp)
 
+		// 按平台启停（实现平台间隔离）
+		apiGroup.POST("/platforms/:platform/start", adminHandler.StartPlatform)
+		apiGroup.POST("/platforms/:platform/stop", adminHandler.StopPlatform)
+
 		// 绑定管理
 		apiGroup.GET("/apps/:app_id/assistants", adminHandler.ListBindings)
 		apiGroup.POST("/apps/:app_id/assistants", adminHandler.CreateBinding)
 		apiGroup.DELETE("/apps/:app_id/assistants/:assistant_id", adminHandler.DeleteBinding)
 		apiGroup.POST("/apps/:app_id/assistants/:assistant_id/default", adminHandler.SetDefault)
+	}
+
+	// ========================================================================
+	// 调试路由（仅开发环境开放，生产环境建议由 adminToken 保护）
+	// ========================================================================
+	debugHandler := debug.NewHandler()
+	debugGroup := router.Group("/debug")
+	debugGroup.Use(adminAuthMiddleware(adminToken))
+	{
+		debugGroup.GET("/errors", debugHandler.RecentErrors)
+		debugGroup.GET("/stats", debugHandler.Stats)
 	}
 
 	// 404 / 405 处理
@@ -125,6 +148,19 @@ func NewRouter(botMgr *botmgr.BotManager, adminToken string) *gin.Engine {
 // 中间件
 // ============================================================================
 
+// requestIDMiddleware 为每个请求生成唯一请求 ID，注入到 gin context 和日志字段中。
+func requestIDMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestID := c.GetHeader("X-Request-ID")
+		if requestID == "" {
+			requestID = utils.GenerateUUID()
+		}
+		c.Set("request_id", requestID)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
 // corsMiddleware CORS 跨域中间件。
 // 注意：Allow-Credentials: true 时不能使用 Allow-Origin: *，
 // 因此反射请求 Origin 或使用白名单模式。
@@ -135,7 +171,7 @@ func corsMiddleware() gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Access-Token")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Access-Token, X-Request-ID")
 		c.Header("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {
@@ -202,7 +238,7 @@ func constantTimeCompare(a, b string) bool {
 // 使用内存 LRU，限制每个 IP 在指定时间窗口内的请求数。
 func rateLimitMiddleware(maxRequests int, window time.Duration) gin.HandlerFunc {
 	type entry struct {
-		count    int
+		count       int
 		windowStart time.Time
 	}
 	var mu sync.Mutex
@@ -232,46 +268,65 @@ func rateLimitMiddleware(maxRequests int, window time.Duration) gin.HandlerFunc 
 }
 
 // ============================================================================
-// WeComWebhookHandler — 企微 Webhook 处理器
+// PlatformWebhookHandler — 通用平台 Webhook 分发处理器
 // ============================================================================
 
-// WeComWebhookHandler 企微 Webhook 请求处理器。
-type WeComWebhookHandler struct {
+// PlatformWebhookHandler 平台 Webhook 请求处理器。
+type PlatformWebhookHandler struct {
 	botManager *botmgr.BotManager
 }
 
-// NewWeComWebhookHandler 创建 Webhook 处理器
-func NewWeComWebhookHandler(botMgr *botmgr.BotManager) *WeComWebhookHandler {
-	return &WeComWebhookHandler{botManager: botMgr}
+// NewPlatformWebhookHandler 创建通用 Webhook 处理器
+func NewPlatformWebhookHandler(botMgr *botmgr.BotManager) *PlatformWebhookHandler {
+	return &PlatformWebhookHandler{botManager: botMgr}
 }
 
-// HandleWebhook 处理企微 Webhook 请求（GET 验证 / POST 接收消息）。
-func (h *WeComWebhookHandler) HandleWebhook(c *gin.Context) {
+// HandleWebhook 根据 platform 和 app_id 将 Webhook 请求分发给对应适配器。
+// 若平台已停用或适配器未运行，返回 503 / 404。
+func (h *PlatformWebhookHandler) HandleWebhook(c *gin.Context) {
+	platform := c.Param("platform")
 	appID := c.Param("app_id")
+	requestID := c.GetString("request_id")
+
 	if appID == "" {
 		c.String(http.StatusBadRequest, "缺少 app_id")
 		return
 	}
 
-	// 获取对应的企微适配器
+	if !h.botManager.IsPlatformRunning(platform) {
+		utils.Sugar.Warnf("[PlatformWebhook] 平台已停用 [request_id=%s, platform=%s, app_id=%s]", requestID, platform, appID)
+		c.String(http.StatusServiceUnavailable, "platform paused")
+		return
+	}
+
+	// 获取对应的适配器
 	adapterInstance := h.botManager.GetAdapter(appID)
 	if adapterInstance == nil {
 		c.String(http.StatusNotFound, "应用未启动")
 		return
 	}
 
-	// 类型断言为企微适配器
-	wecomAdapter, ok := adapterInstance.(*adapter.WeComAdapter)
-	if !ok {
-		c.String(http.StatusBadRequest, "非企微适配器")
+	// 校验平台是否匹配
+	if adapterInstance.Platform() != platform {
+		utils.Sugar.Warnf("[PlatformWebhook] 平台不匹配 [request_id=%s, platform=%s, app_id=%s, actual=%s]",
+			requestID, platform, appID, adapterInstance.Platform())
+		c.String(http.StatusBadRequest, "平台不匹配")
 		return
 	}
 
-	// 委托给适配器处理
-	code, body := wecomAdapter.HandleWebhook(c.Request)
+	// 通过 WebhookHandler 接口分发
+	wh, ok := adapterInstance.(adapter.WebhookHandler)
+	if !ok {
+		utils.Sugar.Errorf("[PlatformWebhook] 平台不支持 Webhook [request_id=%s, platform=%s]", requestID, platform)
+		c.String(http.StatusNotImplemented, "platform webhook not supported")
+		return
+	}
+
+	code, body := wh.HandleWebhook(c.Request)
 	c.String(code, body)
 
-	utils.Sugar.Debugf("[Webhook] 处理完成 [app_id=%s, code=%d]", appID, code)
+	utils.Sugar.Debugf("[PlatformWebhook] 处理完成 [request_id=%s, platform=%s, app_id=%s, code=%d]",
+		requestID, platform, appID, code)
 }
 
 // ============================================================================
@@ -287,6 +342,34 @@ type AdminHandler struct {
 // NewAdminHandler 创建管理 API 处理器
 func NewAdminHandler(botMgr *botmgr.BotManager) *AdminHandler {
 	return &AdminHandler{botManager: botMgr}
+}
+
+// StartPlatform 启动指定平台的所有已启用应用。
+// POST /im/api/platforms/:platform/start
+func (h *AdminHandler) StartPlatform(c *gin.Context) {
+	platform := c.Param("platform")
+	if platform == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 platform"))
+		return
+	}
+	if err := h.botManager.StartPlatform(platform); err != nil {
+		utils.Sugar.Errorf("[AdminHandler] 启动平台失败 [platform=%s]: %v", platform, err)
+		c.JSON(http.StatusInternalServerError, Error(err.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, Success(map[string]string{"platform": platform, "action": "started"}))
+}
+
+// StopPlatform 停止指定平台的所有应用（不影响其他平台）。
+// POST /im/api/platforms/:platform/stop
+func (h *AdminHandler) StopPlatform(c *gin.Context) {
+	platform := c.Param("platform")
+	if platform == "" {
+		c.JSON(http.StatusBadRequest, Error("缺少 platform"))
+		return
+	}
+	h.botManager.StopPlatform(platform)
+	c.JSON(http.StatusOK, Success(map[string]string{"platform": platform, "action": "stopped"}))
 }
 
 // appPublicInfo 应用公开信息（不含 client_secret）
@@ -350,16 +433,6 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 		return
 	}
 
-	// 验证企微特有配置（如果 applicable）
-	if app.Platform == "wecom" && app.ExtraConfig != "" {
-		if cfg, err := common.ParseWeComConfig(app.ExtraConfig); err == nil {
-			if err := cfg.Validate(); err != nil {
-				c.JSON(http.StatusBadRequest, Error("企微配置校验失败: "+err.Error()))
-				return
-			}
-		}
-	}
-
 	// 自动生成 AppID（如果未提供）
 	if app.AppID == "" {
 		app.AppID = utils.GenerateUUID()
@@ -398,16 +471,6 @@ func (h *AdminHandler) UpdateApp(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusNotFound, Error("应用不存在"))
 		return
-	}
-
-	// 验证配置（如果有 extra_config）
-	if app.ExtraConfig != "" && existing.Platform == "wecom" {
-		if cfg, parseErr := common.ParseWeComConfig(app.ExtraConfig); parseErr == nil {
-			if valErr := cfg.Validate(); valErr != nil {
-				c.JSON(http.StatusBadRequest, Error("企微配置校验失败: "+valErr.Error()))
-				return
-			}
-		}
 	}
 
 	// 保留 client_secret（如果未提供新的）

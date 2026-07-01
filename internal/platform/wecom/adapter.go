@@ -1,11 +1,11 @@
-// Package adapter 提供企微适配器的完整实现。
+// Package wecom 提供企微适配器的完整实现。
 // 参照 DATRIX 设计文档 4.3 节企微适配器实现、
 // 架构设计篇 4.2 节平台差异对比，以及钉钉对接项目中的适配器模式。
 //
 // 企微消息接收：Webhook 回调（HTTP POST）+ URL 验证（GET）
 // 企微消息回复：调用 sendTextMsg 主动推送
 // 企微加解密：AES-256-CBC + SHA1 签名验证
-package adapter
+package wecom
 
 import (
 	"encoding/json"
@@ -18,26 +18,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wecom-gateway/internal/adapter"
 	"github.com/wecom-gateway/internal/common"
 	"github.com/wecom-gateway/internal/db"
 	"github.com/wecom-gateway/internal/model"
 	"github.com/wecom-gateway/internal/utils"
 )
 
-// init 将企微适配器注册到全局注册表。
-// 新增平台适配器时，参照此处使用 RegisterAdapter 自注册。
-func init() {
-	RegisterAdapter("wecom", func(app *model.WeComApp) (AbstractIMAdapter, error) {
-		return NewWeComAdapter(app)
-	})
-}
-
 // ============================================================================
 // WeComAdapter — 企微适配器实现 AbstractIMAdapter 接口
 // ============================================================================
 
 // WeComAdapter 企微平台适配器。
-// 负责企微消息接收（Webhook）、消息回复、用户信息获取和 OAuth2 授权。
+// 负责企微消息接收（Webhook）、消息回复、用户信息获取。
 type WeComAdapter struct {
 	// 基础凭证
 	corpID string // 企业 ID
@@ -54,8 +47,8 @@ type WeComAdapter struct {
 	contactsSecret string // 通讯录 Secret（选填）
 
 	// 消息处理
-	handlers map[EventType][]MessageHandler // 注册的消息处理器
-	mu       sync.RWMutex                   // 并发保护
+	handlers map[adapter.EventType][]adapter.MessageHandler // 注册的消息处理器
+	mu       sync.RWMutex                                   // 并发保护
 
 	// HTTP 客户端（带超时）
 	httpClient *http.Client
@@ -67,7 +60,7 @@ type WeComAdapter struct {
 // NewWeComAdapter 创建企微适配器实例。
 // 从数据库应用记录中读取配置，解析 ExtraConfig JSON 并初始化。
 func NewWeComAdapter(app *model.WeComApp) (*WeComAdapter, error) {
-	cfg, err := common.ParseWeComConfig(app.ExtraConfig)
+	cfg, err := ParseWeComConfig(app.ExtraConfig)
 	if err != nil {
 		return nil, fmt.Errorf("解析企微配置失败: %w", err)
 	}
@@ -77,7 +70,7 @@ func NewWeComAdapter(app *model.WeComApp) (*WeComAdapter, error) {
 
 	apiBaseURL := cfg.APIBaseURL
 	if apiBaseURL == "" {
-		apiBaseURL = common.WeComAPIBaseURL
+		apiBaseURL = APIBaseURL
 	}
 
 	// 解码 AES Key（Base64 → []byte）
@@ -95,7 +88,7 @@ func NewWeComAdapter(app *model.WeComApp) (*WeComAdapter, error) {
 		agentID:        cfg.AgentID,
 		apiBaseURL:     apiBaseURL,
 		contactsSecret: cfg.ContactsSecret,
-		handlers:       make(map[EventType][]MessageHandler),
+		handlers:       make(map[adapter.EventType][]adapter.MessageHandler),
 		aesKey:         aesKey,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -136,24 +129,24 @@ func (w *WeComAdapter) Stop() error {
 
 // OnMessage 注册消息处理回调。
 // 同一事件类型可注册多个处理器，收到消息时并发调用。
-func (w *WeComAdapter) OnMessage(eventType EventType, handler MessageHandler) {
+func (w *WeComAdapter) OnMessage(eventType adapter.EventType, handler adapter.MessageHandler) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.handlers[eventType] = append(w.handlers[eventType], handler)
 }
 
 // dispatchMessage 将统一事件分发给所有注册的处理器。
-func (w *WeComAdapter) dispatchMessage(event *IMEvent) {
+func (w *WeComAdapter) dispatchMessage(event *adapter.IMEvent) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	eventType := FriendMessage
+	eventType := adapter.FriendMessage
 	if event.ConversationType == common.ConversationTypeGroup {
-		eventType = GroupMessage
+		eventType = adapter.GroupMessage
 	}
 
 	for _, handler := range w.handlers[eventType] {
-		go func(h MessageHandler) {
+		go func(h adapter.MessageHandler) {
 			defer func() {
 				if r := recover(); r != nil {
 					utils.Sugar.Errorf("[WeComAdapter] handler panic recovered: %v", r)
@@ -165,7 +158,7 @@ func (w *WeComAdapter) dispatchMessage(event *IMEvent) {
 }
 
 // ============================================================================
-// AbstractIMAdapter 接口实现 — Webhook 处理（企微特有）
+// Webhook 处理（企微特有）
 // ============================================================================
 
 // HandleWebhook 处理企微 Webhook 回调请求（由 HTTP Handler 调用）。
@@ -258,7 +251,7 @@ func (w *WeComAdapter) handleMessageReceive(r *http.Request, msgSignature, times
 
 // ReplyMessage 回复消息（企微：按字节分段发送文本消息）。
 // 单聊和群聊使用不同的发送参数。
-func (w *WeComAdapter) ReplyMessage(event *IMEvent, content string) error {
+func (w *WeComAdapter) ReplyMessage(event *adapter.IMEvent, content string) error {
 	accessToken, err := w.GetAccessToken()
 	if err != nil {
 		return fmt.Errorf("获取 access_token 失败: %w", err)
@@ -280,7 +273,7 @@ func (w *WeComAdapter) ReplyMessage(event *IMEvent, content string) error {
 
 // ReplyMessageChunk 流式回复片段。
 // 企微不支持流式卡片更新，此方法仅记录日志，实际回复由 ReplyMessage 处理。
-func (w *WeComAdapter) ReplyMessageChunk(event *IMEvent, chunk *ReplyChunk) error {
+func (w *WeComAdapter) ReplyMessageChunk(event *adapter.IMEvent, chunk *adapter.ReplyChunk) error {
 	utils.Sugar.Debugf("[WeComAdapter] 流式片段（企微暂不支持） [is_final=%v]", chunk.IsFinal)
 	return nil
 }
@@ -290,7 +283,7 @@ func (w *WeComAdapter) ReplyMessageChunk(event *IMEvent, chunk *ReplyChunk) erro
 // ============================================================================
 
 // GetUserInfo 从企微通讯录获取用户信息。
-func (w *WeComAdapter) GetUserInfo(userID string) (*IMUserInfo, error) {
+func (w *WeComAdapter) GetUserInfo(userID string) (*adapter.IMUserInfo, error) {
 	accessToken, err := w.GetAccessToken()
 	if err != nil {
 		return nil, err
@@ -324,7 +317,7 @@ func (w *WeComAdapter) GetUserInfo(userID string) (*IMUserInfo, error) {
 		return nil, fmt.Errorf("获取企微用户信息失败: errcode=%d errmsg=%s", result.Errcode, result.Errmsg)
 	}
 
-	return &IMUserInfo{
+	return &adapter.IMUserInfo{
 		UserID:   result.UserID,
 		UnionID:  result.UserID,
 		Nickname: result.Name,
@@ -339,7 +332,7 @@ func (w *WeComAdapter) GetUserInfo(userID string) (*IMUserInfo, error) {
 // GetAccessToken 获取企微 Access Token（带 Redis 缓存）。
 // 缓存策略：提前 60 秒过期，确保 Token 始终有效。
 func (w *WeComAdapter) GetAccessToken() (string, error) {
-	cacheKey := fmt.Sprintf("%s:%s:%s", common.RedisPrefixToken, w.Platform(), w.corpID)
+	cacheKey := fmt.Sprintf("%s:%s:%s", RedisPrefixToken, w.Platform(), w.corpID)
 
 	// 1. 尝试从 Redis 获取
 	if token, err := db.RedisGet(cacheKey); err == nil && token != "" {
@@ -384,8 +377,6 @@ func (w *WeComAdapter) GetAccessToken() (string, error) {
 // ============================================================================
 // 内部方法 — 消息发送
 // ============================================================================
-// 内部方法 — 消息发送
-// ============================================================================
 
 // sendTextMsg 发送企微文本消息到指定用户（单聊）。
 func (w *WeComAdapter) sendTextMsg(accessToken, userID, content string) error {
@@ -398,7 +389,7 @@ func (w *WeComAdapter) sendTextMsg(accessToken, userID, content string) error {
 }
 
 // sendTextMsgToEvent 根据事件类型（单聊/群聊）发送文本消息。
-func (w *WeComAdapter) sendTextMsgToEvent(accessToken string, event *IMEvent, content string) error {
+func (w *WeComAdapter) sendTextMsgToEvent(accessToken string, event *adapter.IMEvent, content string) error {
 	payload := map[string]interface{}{
 		"msgtype": "text",
 		"agentid": w.agentID,
@@ -456,7 +447,7 @@ func (w *WeComAdapter) doSendTextMsg(accessToken string, payload map[string]inte
 // 企微消息通过 ChatId 字段区分单聊/群聊：
 // - 单聊：ChatId 为空，ConversationID = FromUserName
 // - 群聊：ChatId 非空，ConversationID = ChatId
-func (w *WeComAdapter) convertToIMEvent(msg *wecomDecryptedXML) *IMEvent {
+func (w *WeComAdapter) convertToIMEvent(msg *wecomDecryptedXML) *adapter.IMEvent {
 	conversationType := common.ConversationTypeSingle
 	conversationID := msg.FromUserName
 
@@ -466,7 +457,7 @@ func (w *WeComAdapter) convertToIMEvent(msg *wecomDecryptedXML) *IMEvent {
 		conversationID = msg.ChatID
 	}
 
-	return &IMEvent{
+	return &adapter.IMEvent{
 		Platform:         common.PlatformWeCom,
 		MessageID:        msg.MsgID,
 		SenderID:         msg.FromUserName,

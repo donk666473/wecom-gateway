@@ -1,11 +1,11 @@
-// Package common 提供企微平台特有配置的解析和类型定义。
-package common
+// Package wecom 提供企微平台特有配置的解析和类型定义。
+package wecom
 
 import "encoding/json"
 
-// WeComExtraConfig 企微扩展配置，存储在 im_app 表的 extra_config JSON 字段中。
+// ExtraConfig 企微扩展配置，存储在 im_app 表的 extra_config JSON 字段中。
 // 参照 DATRIX 设计文档 4.1.2 节企微应用配置规范。
-type WeComExtraConfig struct {
+type ExtraConfig struct {
 	// Token 接收消息验证 Token（必填）
 	Token string `json:"token"`
 	// EncodingAESKey 消息加解密密钥（必填）
@@ -22,9 +22,9 @@ type WeComExtraConfig struct {
 
 // ParseWeComConfig 解析企微扩展配置 JSON，并对必填字段进行默认值填充。
 // extraJSON 来自 im_app 表的 extra_config 字段。
-func ParseWeComConfig(extraJSON string) (*WeComExtraConfig, error) {
-	cfg := &WeComExtraConfig{
-		APIBaseURL: "https://qyapi.weixin.qq.com/cgi-bin",
+func ParseWeComConfig(extraJSON string) (*ExtraConfig, error) {
+	cfg := &ExtraConfig{
+		APIBaseURL: APIBaseURL,
 	}
 	if err := json.Unmarshal([]byte(extraJSON), cfg); err != nil {
 		return nil, err
@@ -34,7 +34,7 @@ func ParseWeComConfig(extraJSON string) (*WeComExtraConfig, error) {
 
 // Validate 校验企微配置必填项。
 // 返回 nil 表示校验通过。
-func (c *WeComExtraConfig) Validate() error {
+func (c *ExtraConfig) Validate() error {
 	if c.Token == "" {
 		return ErrMissingToken
 	}
@@ -47,7 +47,15 @@ func (c *WeComExtraConfig) Validate() error {
 	return nil
 }
 
-// 配置校验错误
+// ConfigError 配置校验错误。
+type ConfigError struct {
+	msg string
+}
+
+// Error 返回错误信息。
+func (e *ConfigError) Error() string { return e.msg }
+
+// 配置校验错误实例
 var (
 	ErrMissingToken   = &ConfigError{"token is required"}
 	ErrMissingAESKey  = &ConfigError{"encoding_aes_key is required"}

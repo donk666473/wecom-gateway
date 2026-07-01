@@ -30,10 +30,16 @@ import (
 	"github.com/wecom-gateway/internal/bridge"
 	"github.com/wecom-gateway/internal/common"
 	"github.com/wecom-gateway/internal/db"
+	"github.com/wecom-gateway/internal/debug"
 	"github.com/wecom-gateway/internal/handler"
 	"github.com/wecom-gateway/internal/model"
+	"github.com/wecom-gateway/internal/platform/wecom"
 	"github.com/wecom-gateway/internal/processor"
 	"github.com/wecom-gateway/internal/utils"
+	"go.uber.org/zap/zapcore"
+
+	// 触发钉钉适配器 init() 自注册
+	_ "github.com/wecom-gateway/internal/platform/dingtalk"
 )
 
 func main() {
@@ -61,6 +67,23 @@ func main() {
 		log.Fatalf("初始化日志失败: %v", err)
 	}
 	defer utils.Sync()
+
+	// 注册错误日志钩子：error/fatal 级别日志自动进入调试服务的错误收集器
+	utils.RegisterErrorHook(func(level zapcore.Level, entry zapcore.Entry, fields []zapcore.Field) {
+		record := debug.ErrorRecord{
+			Time:    entry.Time,
+			Level:   level.String(),
+			Message: entry.Message,
+			Caller:  entry.Caller.String(),
+		}
+		for _, f := range fields {
+			if f.Key == "request_id" {
+				record.RequestID = f.String
+				break
+			}
+		}
+		debug.Collect(record)
+	})
 
 	utils.Sugar.Info("=== 企微对接网关启动 ===")
 	utils.Sugar.Infof("配置: server=%d, mode=%s", cfg.Server.Port, cfg.Server.Mode)
@@ -234,6 +257,6 @@ func populateCommonConfig(cfg *config.Config) {
 	common.MessageBatchSize = cfg.Message.BatchSize
 	common.WecomChunkSize = cfg.Message.ChunkSize
 
-	// 企微配置
-	common.WeComAPIBaseURL = cfg.WeCom.APIBaseURL
+	// 企微配置：平台级默认基地址，extra_config 中的 api_base_url 优先级更高
+	wecom.APIBaseURL = cfg.WeCom.APIBaseURL
 }

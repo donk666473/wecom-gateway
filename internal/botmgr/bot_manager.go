@@ -24,9 +24,12 @@ import (
 
 // BotManager 机器人生命周期管理器。
 // 管理所有 IM 平台适配器的创建、启动、停止和查询。
+// 支持按平台维度启停，实现平台间运行隔离。
 type BotManager struct {
 	// apps adapter 实例映射（key: app_id）
 	apps map[string]adapter.AbstractIMAdapter
+	// disabledPlatforms 已手动停用的平台集合（key: platform）
+	disabledPlatforms map[string]bool
 	// pipelineFunc 流水线处理函数（由外部注入）
 	pipelineFunc func(event *adapter.IMEvent)
 	mu           sync.RWMutex
@@ -41,7 +44,8 @@ var (
 func GetBotManager() *BotManager {
 	once.Do(func() {
 		instance = &BotManager{
-			apps: make(map[string]adapter.AbstractIMAdapter),
+			apps:              make(map[string]adapter.AbstractIMAdapter),
+			disabledPlatforms: make(map[string]bool),
 		}
 	})
 	return instance
@@ -168,7 +172,59 @@ func (m *BotManager) StopAllBots() {
 		}
 	}
 	m.apps = make(map[string]adapter.AbstractIMAdapter)
+	m.disabledPlatforms = make(map[string]bool)
 	utils.Sugar.Info("[BotManager] 所有应用已停止")
+}
+
+// ============================================================================
+// 平台级生命周期管理（实现平台间隔离）
+// ============================================================================
+
+// StartPlatform 启动指定平台所有 status=1 的应用，并解除平台停用状态。
+func (m *BotManager) StartPlatform(platform string) error {
+	m.mu.Lock()
+	delete(m.disabledPlatforms, platform)
+	m.mu.Unlock()
+
+	apps, err := model.GetAppsByPlatform(platform)
+	if err != nil {
+		return fmt.Errorf("查询平台活跃应用失败: %w", err)
+	}
+
+	utils.Sugar.Infof("[BotManager] 启动平台 %s，发现 %d 个活跃应用", platform, len(apps))
+	for _, app := range apps {
+		if err := m.StartApp(&app); err != nil {
+			utils.Sugar.Errorf("[BotManager] 启动平台应用失败 [app_id=%s, platform=%s]: %v",
+				app.AppID, platform, err)
+		}
+	}
+	return nil
+}
+
+// StopPlatform 停止指定平台的所有运行中应用，并标记平台为停用。
+// 其他平台不受影响。
+func (m *BotManager) StopPlatform(platform string) {
+	m.mu.Lock()
+	m.disabledPlatforms[platform] = true
+	m.mu.Unlock()
+
+	apps := m.GetAdaptersByPlatform(platform)
+	for appID, a := range apps {
+		if err := a.Stop(); err != nil {
+			utils.Sugar.Warnf("[BotManager] 停止平台应用失败 [app_id=%s, platform=%s]: %v", appID, platform, err)
+		}
+		if err := m.StopApp(appID); err != nil {
+			utils.Sugar.Warnf("[BotManager] 从管理器移除应用失败 [app_id=%s]: %v", appID, err)
+		}
+	}
+	utils.Sugar.Infof("[BotManager] 平台 %s 已停止，共 %d 个应用", platform, len(apps))
+}
+
+// IsPlatformRunning 判断指定平台是否处于运行状态（未被手动停用）。
+func (m *BotManager) IsPlatformRunning(platform string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return !m.disabledPlatforms[platform]
 }
 
 // ============================================================================
@@ -187,6 +243,20 @@ func (m *BotManager) GetAppCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.apps)
+}
+
+// GetAdaptersByPlatform 返回指定平台的所有运行中适配器。
+func (m *BotManager) GetAdaptersByPlatform(platform string) map[string]adapter.AbstractIMAdapter {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]adapter.AbstractIMAdapter)
+	for appID, a := range m.apps {
+		if a.Platform() == platform {
+			result[appID] = a
+		}
+	}
+	return result
 }
 
 // GetAllAdapters 获取所有适配器

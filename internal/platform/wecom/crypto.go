@@ -1,4 +1,4 @@
-// Package adapter 提供企微消息加解密实现。
+// Package wecom 提供企微消息加解密实现。
 // 参照企微官方 WXBizMsgCrypt 加解密库：
 // https://developer.work.weixin.qq.com/document/path/90930
 //
@@ -6,7 +6,7 @@
 // 1. 签名验证：SHA1(sort(token, timestamp, nonce, encrypt))
 // 2. 消息解密：AES-256-CBC + Base64
 // 3. 消息加密：AES-256-CBC + Base64
-package adapter
+package wecom
 
 import (
 	"bytes"
